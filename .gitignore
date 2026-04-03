@@ -1,0 +1,28 @@
+# Flutter specific
+bipbop-android/.dart_tool/
+bipbop-android/build/
+bipbop-android/.flutter-plugins
+bipbop-android/.flutter-plugins-dependencies
+bipbop-android/.packages
+bipbop-android/.pub-cache/
+bipbop-android/.pub/
+bipbop-android/android/local.properties
+bipbop-android/android/app/debug/
+bipbop-android/android/app/profile/
+bipbop-android/android/app/release/
+
+# Go specific
+bipbop-engine/bin/
+bipbop-engine/mobile/android/golib/libbipbop.h
+bipbop-engine/mobile/android/golib/libbipbop.so
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.log
+*.tmp
+
+# KEEP native libraries in jniLibs (they are needed for build)
+!bipbop-android/android/app/src/main/jniLibs/**
