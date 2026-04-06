@@ -1,0 +1,25 @@
+{
+  "_comment": "Главный конфиг BipBop. Меняй тут — скрипт подставит везде.",
+  "name": "BipBop",
+  "package": "com.volfheim.bipbop",
+  "version": "1.2",
+  "version_code": 4,
+
+  "server_port": "8443",
+  "default_mtu": 1500,
+  "ping_url": "https://cp.cloudflare.com",
+
+  "github_repo": "volfheim/bipbop",
+  "install_dir": "/opt/bipbop",
+
+  "branding": {
+    "primary_color": "#FFB74D",
+    "accent_color":  "#FF9800",
+    "notification_channel": "bipbop_vpn"
+  },
+
+  "icon": {
+    "default": "ic_bipbop_gold",
+    "variants": ["red", "blue", "green", "white"]
+  }
+}
