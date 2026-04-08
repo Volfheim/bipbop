@@ -138,6 +138,23 @@ func (m *MultiCloser) Close() error {
 
 // --- TURN dial ---
 
+func DialDirect(peer, pw string) (*yamux.Session, io.Closer, error) {
+	blk, _ := kcp.NewAESBlockCrypt(DeriveKey(pw))
+	kc, err := kcp.DialWithOptions(peer, blk, 10, 3)
+	if err != nil {
+		return nil, nil, err
+	}
+	kc.SetNoDelay(0, 40, 0, 0)
+	kc.SetWindowSize(64, 64)
+	kc.SetStreamMode(true)
+	ym, err := yamux.Client(kc, YmxCfg())
+	if err != nil {
+		kc.Close()
+		return nil, nil, err
+	}
+	return ym, kc, nil
+}
+
 func DialTURN(cred TurnCred, peer, pw string) (*yamux.Session, io.Closer, error) {
 	addr := strings.TrimPrefix(strings.TrimPrefix(strings.Split(cred.URL, "?")[0], "turn:"), "turns:")
 	uc, err := net.ListenUDP("udp", nil)
@@ -186,25 +203,28 @@ func DialTURN(cred TurnCred, peer, pw string) (*yamux.Session, io.Closer, error)
 	return ym, &MultiCloser{[]io.Closer{ym, kc, CloserFunc(func() { tc.Close() }), uc}}, nil
 }
 
-// --- Establish tunnel (try all TURN servers) ---
+// --- Establish tunnel (try all TURN servers + Direct Fallback) ---
 
 func Establish(cache *CredsCache, peer, pw string, force bool) (*yamux.Session, io.Closer, error) {
-	creds, err := cache.Get(force)
-	if err != nil {
-		return nil, nil, err
-	}
-	var turnCreds []TurnCred
-	for _, c := range creds {
-		if strings.HasPrefix(c.URL, "turn") {
-			turnCreds = append(turnCreds, c)
-		}
-	}
-	if len(turnCreds) == 0 {
-		return nil, nil, fmt.Errorf("no TURN servers found")
-	}
-
 	log := getLog()
 	
+	// Попытка прямого подключения, если WB заблокировал транзитные пакеты на внешние IP
+	var turnCreds []TurnCred
+	
+	creds, err := cache.Get(force)
+	if err == nil {
+		for _, c := range creds {
+			if strings.HasPrefix(c.URL, "turn") {
+				turnCreds = append(turnCreds, c)
+			}
+		}
+	} else {
+		log.Warn("Failed to fetch WB creds, trying Direct Connection...")
+	}
+
+	// Всегда добавляем DIRECT как последний (или единственный) шанс
+	turnCreds = append(turnCreds, TurnCred{URL: "DIRECT"})
+
 	type result struct {
 		ym  *yamux.Session
 		cl  io.Closer
@@ -220,7 +240,17 @@ func Establish(cache *CredsCache, peer, pw string, force bool) (*yamux.Session, 
 
 	for _, c := range turnCreds {
 		go func(cr TurnCred) {
-			ym, cl, err := DialTURN(cr, peer, pw)
+			var ym *yamux.Session
+			var cl io.Closer
+			var err error
+			
+			if cr.URL == "DIRECT" {
+				log.Info("Trying fallback Direct connection to KCP Server...")
+				ym, cl, err = DialDirect(peer, pw)
+			} else {
+				ym, cl, err = DialTURN(cr, peer, pw)
+			}
+			
 			if err != nil {
 				if int(failedCount.Add(1)) == int(total) {
 					select {
