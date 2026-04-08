@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,6 +74,9 @@ func wbReq(cl *http.Client, method, ep string, body []byte, tok string) ([]byte,
 	}
 	b, _ := io.ReadAll(r)
 	if rs.StatusCode >= 300 {
+		if rs.StatusCode == 403 || strings.Contains(string(b), "<html") {
+			return nil, fmt.Errorf("CAPTCHA_REQ: %s", WbBase+"/auth/api/v1/auth/user/guest-register")
+		}
 		return nil, fmt.Errorf("HTTP %d: %s", rs.StatusCode, string(b))
 	}
 	return b, nil

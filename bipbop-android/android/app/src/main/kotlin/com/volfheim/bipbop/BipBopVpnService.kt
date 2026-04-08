@@ -69,8 +69,9 @@ class BipBopVpnService : VpnService() {
         when (action) {
             ACTION_CONNECT -> {
                 val smartKey = intent.getStringExtra("EXTRA_SMART_KEY")
+                val proxyOnly = intent.getBooleanExtra("EXTRA_PROXY_ONLY", false)
                 if (smartKey != null) {
-                    establishVpn(smartKey)
+                    establishVpn(smartKey, proxyOnly)
                 } else {
                     broadcastState("error")
                     stopSelf()
@@ -83,10 +84,27 @@ class BipBopVpnService : VpnService() {
         return START_STICKY
     }
 
-    private fun establishVpn(smartKey: String) {
+    private fun establishVpn(smartKey: String, proxyOnly: Boolean) {
         vpnScope.launch {
             broadcastState("connecting")
             
+            if (proxyOnly) {
+                updateNotification("Включен SOCKS5 прокси")
+                broadcastState("connected")
+                Log.i(TAG, "Starting native Go core in Proxy-Only mode (fd = -1)")
+                runCatching {
+                    val result = startVpnNative(smartKey, -1, 1200, "1.1.1.1")
+                    if (result != 0) {
+                        Log.e(TAG, "Native core failed: $result")
+                        shutdown()
+                    }
+                }.onFailure { e ->
+                    Log.e(TAG, "JNI Error: ${e.message}")
+                    shutdown()
+                }
+                return@launch
+            }
+
             val builder = Builder()
                 .setMtu(1280)
                 .addAddress("10.0.0.2", 24)
@@ -183,14 +201,12 @@ class BipBopVpnService : VpnService() {
     private fun shutdown() {
         vpnScope.launch {
             Log.i(TAG, "Shutting down VPN service...")
-            runCatching { stopVpnNative() }
             
+            // Мгновенно убираем иконку VPN
             runCatching {
                 vpnInterface?.close()
                 vpnInterface = null
             }
-            
-            broadcastState("disconnected")
             
             withContext(Dispatchers.Main) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -198,6 +214,13 @@ class BipBopVpnService : VpnService() {
                 } else {
                     stopForeground(true)
                 }
+            }
+            broadcastState("disconnected")
+            
+            // Завершаем Go-кора (может блокировать) в фоне
+            runCatching { stopVpnNative() }
+            
+            withContext(Dispatchers.Main) {
                 stopSelf()
             }
         }

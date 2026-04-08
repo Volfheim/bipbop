@@ -61,13 +61,17 @@ func (e *vpnEngine) run() error {
 		}
 	}()
 
-	// 3. Start tun2socks ONCE at the beginning
-	t2s, err := newTun2Socks(e.tunFd, socksAddr, e.mtu, e.dns)
-	if err != nil {
-		emit("error")
-		return err
+	// 3. Start tun2socks only if tunFd != -1 (VPN Slot mode)
+	if e.tunFd != -1 {
+		t2s, err := newTun2Socks(e.tunFd, socksAddr, e.mtu, e.dns)
+		if err != nil {
+			emit("error")
+			return err
+		}
+		defer t2s.Close()
+	} else {
+		logToApp("info", "[ENG] Обычный SOCKS5 режим (без захвата VPN-слота)")
 	}
-	defer t2s.Close() // Close only when engine run loop returns (Stop called)
 
 	// 4. Main Reconnect Loop
 	for {
