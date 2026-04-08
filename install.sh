@@ -135,7 +135,15 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
+    
+    # Жесткая остановка старых и новых служб для освобождения порта
     systemctl stop "$SVC_NAME" 2>/dev/null || true
+    systemctl stop lionheart.service 2>/dev/null || true
+    systemctl disable lionheart.service 2>/dev/null || true
+    pkill -9 -f "lionheart" 2>/dev/null || true
+    pkill -9 -f "volfheim-server" 2>/dev/null || true
+    sleep 2
+
     systemctl enable "$SVC_NAME"
     systemctl start "$SVC_NAME"
 
