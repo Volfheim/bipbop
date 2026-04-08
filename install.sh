@@ -100,24 +100,13 @@ install_server() {
     fi
 
     echo -e "${CYAN}>>> Загрузка последней версии с GitHub...${NC}"
-    # Пытаемся получить прямую ссылку
-    local DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/latest/download/volfheim-linux-amd64"
+    # Используем прямую ссылку на бинарник в папке bipbop-server, так как он закоммичен в репозиторий
+    local DOWNLOAD_URL="https://raw.githubusercontent.com/$GITHUB_REPO/main/bipbop-server/volfheim-linux-amd64"
     
-    if curl -sL --head -w "%{http_code}" "$DOWNLOAD_URL" -o /dev/null | grep -q "404"; then
-         echo -e "${YELLOW}Прямая ссылка 404. Пытаюсь распарсить API GitHub...${NC}"
-         DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | grep -Po '"browser_download_url": "\K.*?(?=")' | grep "linux" | grep "amd64" | head -n 1)
-         if [[ -z "$DOWNLOAD_URL" ]]; then
-            echo -e "${RED}[✗] Не удалось найти релиз для linux-amd64 в репозитории $GITHUB_REPO.${NC}"
-            echo -e "Пожалуйста, убедитесь, что вы создали релиз и прикрепили бинарник."
-            read -r -p "Нажмите Enter для продолжения..."
-            return
-         fi
-    fi
-
     # Скачивание и установка
     curl -sL "$DOWNLOAD_URL" -o "/tmp/$BIN_NAME"
-    if [[ ! -s "/tmp/$BIN_NAME" ]]; then
-        echo -e "${RED}[✗] Ошибка скачивания файла.${NC}"
+    if [[ ! -s "/tmp/$BIN_NAME" || $(stat -c%s "/tmp/$BIN_NAME") -lt 100000 ]]; then
+        echo -e "${RED}[✗] Ошибка скачивания файла. Ссылка недоступна или файл поврежден.${NC}"
         read -r -p "Нажмите Enter для продолжения..."
         return
     fi
