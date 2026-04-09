@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/hashicorp/yamux"
-	"github.com/pion/webrtc/v4"
 )
 
 const (
@@ -132,28 +131,31 @@ func (m *MultiCloser) Close() error {
 	return nil
 }
 
-// Establish tunnel (Telemost DataChannel)
-type AuthValidator func(string) bool
+// --- Establish tunnel (Telemost DataChannel) ---
 
-// Establish tunnel (Telemost DataChannel) - Client side helper
-func Establish(roomURL, pw string, isServer bool, authValidator AuthValidator) (*yamux.Session, io.Closer, error) {
-	// ... (предыдущий код Establish остается таким же, он используется клиентом)
-	// Я обновлю его тело чуть позже, чтобы избежать дублирования логики с Listen, 
-	// но пока просто добавлю Listen ниже.
-	return establishInternal(roomURL, pw, isServer, authValidator)
-}
+func Establish(roomURL, pw string, isServer bool) (*yamux.Session, io.Closer, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
 
-func establishInternal(roomURL, pw string, isServer bool, authValidator AuthValidator) (*yamux.Session, io.Closer, error) {
 	name := "Guest"
-	if isServer { name = "Host" }
+	if isServer {
+		name = "Host"
+	}
 
 	peer, err := NewWebRTCPeer(roomURL, name, nil)
-	if err != nil { return nil, nil, err }
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to init WebRTC: %w", err)
+	}
 
+	// Адаптер (DCStream) сам поставит onData callback внутрь peer
 	stream := NewDCStream(peer)
-	if err := peer.Connect(context.Background()); err != nil {
+
+	log := getLog()
+	log.Info(fmt.Sprintf("[ENG] Connecting to Telemost Room... (%s)", name))
+
+	if err := peer.Connect(ctx); err != nil {
 		stream.Close()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("telemost connect error: %w", err)
 	}
 
 	var ym *yamux.Session
@@ -164,77 +166,10 @@ func establishInternal(roomURL, pw string, isServer bool, authValidator AuthVali
 	}
 	if err != nil {
 		stream.Close()
-		return nil, nil, err
-	}
-
-	if _, err := performAuth(ym, stream, pw, isServer, authValidator); err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("yamux error: %w", err)
 	}
 
 	return ym, &MultiCloser{[]io.Closer{ym, stream}}, nil
-}
-
-func performAuth(ym *yamux.Session, raw io.Closer, pw string, isServer bool, validator AuthValidator) (string, error) {
-	log := getLog()
-	if !isServer {
-		s, err := ym.OpenStream()
-		if err != nil { return "", err }
-		defer s.Close()
-		s.SetDeadline(time.Now().Add(10 * time.Second))
-		fmt.Fprintf(s, "%s\n", pw)
-		resp := make([]byte, 1)
-		if _, err := s.Read(resp); err != nil { return "", err }
-		if resp[0] != 0 { return "", fmt.Errorf("auth failed") }
-		log.Info("[ENG] Auth successful")
-		return pw, nil
-	} else {
-		s, err := ym.AcceptStream()
-		if err != nil { return "", err }
-		defer s.Close()
-		s.SetDeadline(time.Now().Add(10 * time.Second))
-		var rpw string
-		if _, err := fmt.Fscanf(s, "%s\n", &rpw); err != nil {
-			s.Write([]byte{1})
-			return "", err
-		}
-		valid := false
-		if validator != nil { valid = validator(rpw) } else { valid = (rpw == pw) }
-		if !valid {
-			s.Write([]byte{1})
-			return "", fmt.Errorf("auth failed")
-		}
-		s.Write([]byte{0})
-		log.Info("[ENG] Client authenticated")
-		return rpw, nil
-	}
-}
-
-// Listen starts a server in the specified room and handles multiple sessions
-func Listen(roomURL, pw string, validator AuthValidator, handler func(string, *yamux.Session)) error {
-	ctx := context.Background()
-	peer, err := NewWebRTCPeer(roomURL, "Host", nil)
-	if err != nil { return err }
-
-	peer.onNewDC = func(dc *webrtc.DataChannel) {
-		go func() {
-			getLog().Info("[ENG] New client joining...")
-			dcc := NewDCStreamFromDC(peer, dc)
-			ym, err := yamux.Server(dcc, YmxCfg())
-			if err != nil {
-				dcc.Close()
-				return
-			}
-			usedPw, err := performAuth(ym, dcc, pw, true, validator)
-			if err != nil {
-				ym.Close()
-				dcc.Close()
-				return
-			}
-			handler(usedPw, ym)
-		}()
-	}
-
-	return peer.Connect(ctx)
 }
 
 // --- Session wrapper ---
@@ -333,7 +268,7 @@ func HealthLoop(ctx context.Context, sess *Session, rch chan<- struct{}) {
 	}
 }
 
-func ReconnectLoop(ctx context.Context, sess *Session, roomURL, pw string, isServer bool, rch <-chan struct{}, authValidator func(string) bool) {
+func ReconnectLoop(ctx context.Context, sess *Session, roomURL, pw string, isServer bool, rch <-chan struct{}) {
 	log := getLog()
 	lis := getLis()
 	for {
@@ -350,7 +285,7 @@ func ReconnectLoop(ctx context.Context, sess *Session, roomURL, pw string, isSer
 				default:
 				}
 				log.Info(fmt.Sprintf("Reconnecting (#%d)...", a))
-				y, c, e := Establish(roomURL, pw, isServer, authValidator)
+				y, c, e := Establish(roomURL, pw, isServer)
 				if e == nil {
 					sess.Set(y, c)
 					lis.OnStatus("connected")

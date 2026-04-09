@@ -1,16 +1,15 @@
 package cli
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"os"
-	"sync"
 	"text/tabwriter"
 	"time"
 
 	"github.com/armon/go-socks5"
-	"github.com/hashicorp/yamux"
 	"github.com/spf13/cobra"
 
 	"github.com/volfheim/bipbop/core"
@@ -220,23 +219,29 @@ func runClientDelete(cmd *cobra.Command, args []string) {
 
 // --- Server ---
 
-var (
-	activeSessions   = make(map[string]*yamux.Session)
-	activeSessionsMu sync.Mutex
-)
-
 func runServer(cmd *cobra.Command, args []string) {
 	store := NewClientStore(dataDir)
 	if err := store.Load(); err != nil {
 		fmt.Printf("[WARN] Cannot load clients.json: %v, running in legacy mode\n", err)
 	}
 
-	// Legacy single-client mode password
-	legacyPassword := password
+	// Legacy single-client mode (backward compatible)
+	if password == "" && len(store.GetActive()) == 0 {
+		b := make([]byte, 16)
+		rand.Read(b)
+		password = hex.EncodeToString(b)
+		fmt.Printf("[INFO] Auto-generated server password: %s\n", password)
+	}
 
 	activeClients := store.GetActive()
 	if len(activeClients) > 0 {
-		fmt.Printf("[INFO] Loaded %d active client(s)\n", len(activeClients))
+		fmt.Printf("[INFO] Loaded %d active client(s):\n", len(activeClients))
+		for _, c := range activeClients {
+			fmt.Printf("  ● %s (%s)\n", c.Name, c.ID)
+		}
+		// Use first active client's password for Establish
+		// (all clients share the same room, server accepts any active password)
+		password = activeClients[0].Password
 	}
 
 	if listenAddr == "" {
@@ -244,64 +249,37 @@ func runServer(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("[INFO] Volfheim Server v2.0 running in Room: \033[32m%s\033[0m\n", listenAddr)
+	fmt.Printf("[INFO] Volfheim Server (Host) running in Room: \033[32m%s\033[0m\n", listenAddr)
 
-	validator := func(p string) bool {
-		// 1. Check legacy password
-		if legacyPassword != "" && p == legacyPassword {
-			return true
-		}
-		// 2. Check client store
-		store.Load() // Reload to get fresh status
-		return store.IsPasswordActive(p)
+	ctx := context.Background()
+	sess := &core.Session{}
+	rch := make(chan struct{}, 1)
+
+	ym, cl, err := core.Establish(listenAddr, password, true)
+	if err == nil {
+		sess.Set(ym, cl)
 	}
+
+	go core.HealthLoop(ctx, sess, rch)
+	go core.ReconnectLoop(ctx, sess, listenAddr, password, true, rch)
 
 	srv, _ := socks5.New(&socks5.Config{})
 
-	// Task to periodically kick revoked clients
-	go func() {
-		for {
-			time.Sleep(10 * time.Second)
-			store.Load()
-			activeSessionsMu.Lock()
-			for pw, ym := range activeSessions {
-				if !validator(pw) {
-					fmt.Printf("[INFO] Kicking revoked client (password hash: %s...)\n", pw[:4])
-					ym.Close()
-					delete(activeSessions, pw)
-				}
-			}
-			activeSessionsMu.Unlock()
+	for {
+		y, ok := sess.Get()
+		if !ok || y == nil {
+			time.Sleep(1 * time.Second)
+			continue
 		}
-	}()
 
-	err := core.Listen(listenAddr, legacyPassword, validator, func(usedPw string, ym *yamux.Session) {
-		// Store session for live revocation tracking
-		activeSessionsMu.Lock()
-		activeSessions[usedPw] = ym
-		activeSessionsMu.Unlock()
-
+		st, err := y.AcceptStream()
+		if err != nil {
+			time.Sleep(1 * time.Second)
+			continue
+		}
 		go func() {
-			fmt.Printf("[INFO] Handling new authenticated client session (client pw: %s...)\n", usedPw[:4])
-			for {
-				st, err := ym.AcceptStream()
-				if err != nil {
-					activeSessionsMu.Lock()
-					delete(activeSessions, usedPw)
-					activeSessionsMu.Unlock()
-					break
-				}
-				go func() {
-					srv.ServeConn(st)
-				}()
-			}
+			fmt.Printf("[INFO] Accepted new stream\n")
+			srv.ServeConn(st)
 		}()
-	})
-
-	if err != nil {
-		fmt.Printf("[ERROR] Server listener failed: %v\n", err)
-		os.Exit(1)
 	}
-
-	select {} // Keep running
 }

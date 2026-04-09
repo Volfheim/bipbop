@@ -26,7 +26,6 @@ type WebRTCPeer struct {
 	onData      func([]byte)
 	closeCh     chan struct{}
 	keepAliveCh chan struct{}
-	onNewDC     func(*webrtc.DataChannel)
 }
 
 func NewWebRTCPeer(roomURL, name string, onData func([]byte)) (*WebRTCPeer, error) {
@@ -105,9 +104,6 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	p.pcSub.OnDataChannel(func(dc *webrtc.DataChannel) {
 		getLog().Info(fmt.Sprintf("[RTC] Received DataChannel: %s", dc.Label()))
 		if dc.Label() == "bipbop" {
-			if p.onNewDC != nil {
-				p.onNewDC(dc)
-			}
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				if p.onData != nil && len(msg.Data) > 0 {
 					p.onData(msg.Data)
