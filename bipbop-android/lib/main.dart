@@ -38,11 +38,13 @@ class _VPNScreenState extends State<VPNScreen> with SingleTickerProviderStateMix
   static const platform = MethodChannel('com.volfheim.bipbop/vpn');
 
   final TextEditingController _keyController = TextEditingController();
+  final TextEditingController _upstreamController = TextEditingController();
   VPNState _vpnState = VPNState.disconnected;
   String _statusMessage = 'Нажмите для подключения';
   late AnimationController _pulseController;
   final List<String> _logs = [];
   final ScrollController _logScrollController = ScrollController();
+  bool _proxyMode = false;
 
   @override
   void initState() {
@@ -59,6 +61,7 @@ class _VPNScreenState extends State<VPNScreen> with SingleTickerProviderStateMix
   void dispose() {
     _pulseController.dispose();
     _keyController.dispose();
+    _upstreamController.dispose();
     _logScrollController.dispose();
     super.dispose();
   }
@@ -67,6 +70,8 @@ class _VPNScreenState extends State<VPNScreen> with SingleTickerProviderStateMix
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _keyController.text = prefs.getString('smart_key') ?? '';
+      _proxyMode = prefs.getBool('proxy_mode') ?? false;
+      _upstreamController.text = prefs.getString('upstream_proxy') ?? '';
     });
   }
 
@@ -161,8 +166,12 @@ class _VPNScreenState extends State<VPNScreen> with SingleTickerProviderStateMix
       });
 
       try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('upstream_proxy', _upstreamController.text.trim());
         await platform.invokeMethod('startVpn', {
           'smartKey': _keyController.text.trim(),
+          'proxyOnly': _proxyMode,
+          'upstreamProxy': _upstreamController.text.trim(),
         });
       } on PlatformException catch (e) {
         _updateState('error');
@@ -314,6 +323,61 @@ class _VPNScreenState extends State<VPNScreen> with SingleTickerProviderStateMix
                   enabled: _vpnState == VPNState.disconnected,
                 ),
               ),
+              const SizedBox(height: 10),
+
+              // Upstream Proxy Input
+              Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF161B22),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white.withOpacity(0.05)),
+                ),
+                child: TextField(
+                  controller: _upstreamController,
+                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                  decoration: InputDecoration(
+                    labelText: 'Upstream прокси (опционально)',
+                    hintText: '127.0.0.1:10808',
+                    hintStyle: TextStyle(color: Colors.white.withOpacity(0.15)),
+                    labelStyle: TextStyle(color: Colors.white.withOpacity(0.4)),
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    prefixIcon: Icon(Icons.alt_route, size: 20, color: Colors.white.withOpacity(0.3)),
+                  ),
+                  enabled: _vpnState == VPNState.disconnected,
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // Proxy Mode Toggle
+              Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF161B22),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white.withOpacity(0.05)),
+                ),
+                child: SwitchListTile(
+                  title: const Text('Режим прокси', style: TextStyle(color: Colors.white, fontSize: 14)),
+                  subtitle: Text(
+                    _proxyMode
+                        ? 'SOCKS5 → 127.0.0.1:13349 (не занимает VPN-слот)'
+                        : 'Полный VPN (захват системного трафика)',
+                    style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 11),
+                  ),
+                  value: _proxyMode,
+                  onChanged: _vpnState == VPNState.disconnected
+                      ? (val) async {
+                          setState(() => _proxyMode = val);
+                          final prefs = await SharedPreferences.getInstance();
+                          await prefs.setBool('proxy_mode', val);
+                        }
+                      : null,
+                  activeColor: const Color(0xFF64B5F6),
+                  dense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                ),
+              ),
 
               const SizedBox(height: 16),
 
@@ -330,7 +394,9 @@ class _VPNScreenState extends State<VPNScreen> with SingleTickerProviderStateMix
                     elevation: 0,
                   ),
                   child: Text(
-                    _vpnState == VPNState.disconnected ? 'Подключиться' : 'Отключить',
+                    _vpnState == VPNState.disconnected
+                        ? (_proxyMode ? 'Запустить прокси' : 'Подключиться')
+                        : 'Отключить',
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
                   ),
                 ),

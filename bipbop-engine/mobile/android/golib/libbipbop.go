@@ -68,6 +68,13 @@ func SetListener(l EventListener) {
 	core.SetListener(mobileStatus{})
 }
 
+func SetUpstreamProxy(addr string) {
+	core.SetUpstream(addr)
+	if addr != "" {
+		logToApp("info", fmt.Sprintf("[LIB] Upstream proxy set: %s", addr))
+	}
+}
+
 func Start(smartKey string, tunFd int, mtu int, dns string) error {
 	mu.Lock()
 	if vpnEng != nil {

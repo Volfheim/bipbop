@@ -17,6 +17,7 @@ class MainActivity: FlutterActivity() {
     private var methodChannel: MethodChannel? = null
     private var pendingKey: String? = null
     private var pendingProxyOnly: Boolean = false
+    private var pendingUpstream: String = ""
     private val REQ_VPN_PREPARE = 0x1
 
     private val vpnReceiver = object : BroadcastReceiver() {
@@ -56,7 +57,9 @@ class MainActivity: FlutterActivity() {
                 "startVpn" -> {
                     val key = call.argument<String>("smartKey")
                     val proxyOnly = call.argument<Boolean>("proxyOnly") ?: false
+                    val upstreamProxy = call.argument<String>("upstreamProxy") ?: ""
                     if (key != null) {
+                        pendingUpstream = upstreamProxy
                         if (proxyOnly) {
                             startServiceWithKey(key, true)
                         } else {
@@ -107,6 +110,7 @@ class MainActivity: FlutterActivity() {
             action = BipBopVpnService.ACTION_CONNECT
             putExtra("EXTRA_SMART_KEY", key)
             putExtra("EXTRA_PROXY_ONLY", proxyOnly)
+            putExtra("EXTRA_UPSTREAM_PROXY", pendingUpstream)
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)

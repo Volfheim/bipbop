@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/net/proxy"
 )
 
 const apiBase = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"
@@ -52,7 +55,22 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	req.Header.Set("Origin", "https://telemost.yandex.ru")
 	req.Header.Set("Referer", "https://telemost.yandex.ru/")
 
-	resp, err := http.DefaultClient.Do(req)
+	// Use upstream proxy if configured
+	client := http.DefaultClient
+	upstream := GetUpstream()
+	if upstream != "" {
+		getLog().Info(fmt.Sprintf("[API] Using upstream proxy: %s", upstream))
+		dialer, err := proxy.SOCKS5("tcp", upstream, nil, &net.Dialer{Timeout: 10 * time.Second})
+		if err == nil {
+			client = &http.Client{
+				Transport: &http.Transport{
+					Dial: dialer.Dial,
+				},
+			}
+		}
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
