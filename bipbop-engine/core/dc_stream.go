@@ -7,12 +7,15 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/pion/webrtc/v4"
 )
 
 // DCStream wraps webrtc.DataChannel to act exactly like standard net.Conn.
 // It fragments outgoing data to bypass Yandex 8KB message size limit.
 type DCStream struct {
 	peer       *WebRTCPeer
+	dc         *webrtc.DataChannel
 	readBuf    bytes.Buffer
 	readMu     sync.Mutex
 	readCond   *sync.Cond
@@ -29,16 +32,32 @@ func (a AddrMock) Network() string { return "webrtc" }
 func (a AddrMock) String() string  { return a.addr }
 
 func NewDCStream(peer *WebRTCPeer) *DCStream {
+	// Legacy constructor for client side or single-DC peers
 	s := &DCStream{
 		peer:       peer,
+		dc:         peer.dc,
 		localAddr:  AddrMock{addr: "local-webrtc"},
 		remoteAddr: AddrMock{addr: "remote-webrtc"},
 	}
 	s.readCond = sync.NewCond(&s.readMu)
-
-	// Callback from webrtc.go triggers this
 	peer.onData = s.pushData
+	return s
+}
 
+func NewDCStreamFromDC(peer *WebRTCPeer, dc *webrtc.DataChannel) *DCStream {
+	s := &DCStream{
+		peer:       peer,
+		dc:         dc,
+		localAddr:  AddrMock{addr: "local-webrtc"},
+		remoteAddr: AddrMock{addr: "remote-webrtc"},
+	}
+	s.readCond = sync.NewCond(&s.readMu)
+	
+	// Bind this specific DC's messages to this stream
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+		s.pushData(msg.Data)
+	})
+	
 	return s
 }
 
@@ -85,11 +104,11 @@ func (s *DCStream) Write(b []byte) (n int, err error) {
 		if end > total {
 			end = total
 		}
-		if s.peer.dc == nil {
+		if s.dc == nil {
 			return 0, errors.New("datachannel not allocated")
 		}
 
-		err := s.peer.dc.Send(b[i:end])
+		err := s.dc.Send(b[i:end])
 		if err != nil {
 			return i, err
 		}
@@ -108,7 +127,10 @@ func (s *DCStream) Close() error {
 	s.readCond.Broadcast()
 	s.readMu.Unlock()
 
-	return s.peer.Close()
+	if s.dc != nil {
+		s.dc.Close()
+	}
+	return nil
 }
 
 func (s *DCStream) LocalAddr() net.Addr {

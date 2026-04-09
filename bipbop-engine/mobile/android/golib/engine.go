@@ -63,7 +63,7 @@ func (e *vpnEngine) run() error {
 	// 3. First Establish — BEFORE tun2socks, so signaling traffic
 	// goes directly without being captured by our own VPN tunnel.
 	logToApp("info", "[ENG] Establishing tunnel...")
-	ym, cl, err := core.Establish(e.peer, e.pw, false)
+	ym, cl, err := core.Establish(e.peer, e.pw, false, nil)
 	if err != nil {
 		logToApp("error", fmt.Sprintf("[ENG] Initial establish failed: %v", err))
 		emit("error")
@@ -104,7 +104,7 @@ func (e *vpnEngine) run() error {
 		}
 
 		logToApp("info", "[ENG] Establishing tunnel...")
-		ym, cl, err := core.Establish(e.peer, e.pw, false)
+		ym, cl, err := core.Establish(e.peer, e.pw, false, nil)
 		if err != nil {
 			logToApp("error", fmt.Sprintf("[ENG] Establish failed: %v", err))
 			emit("reconnecting")
