@@ -3,14 +3,18 @@
 # BIP-BOP SERVER MANAGER — Интерактивное меню управления
 # ==============================================================================
 # Установка: curl -sL https://raw.githubusercontent.com/Volfheim/bipbop/main/install.sh | sudo bash
-# Запуск:    bipbop
+# Запуск:    sudo bipbop
+
+# Fix Windows CRLF → Unix LF (prevents menu flashing)
+if [[ -f "$0" ]] && head -1 "$0" | grep -q $'\r'; then
+    sed -i 's/\r$//' "$0"
+    exec bash "$0" "$@"
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
@@ -23,8 +27,14 @@ SVC_NAME="volfheim.service"
 GITHUB_REPO="Volfheim/bipbop"
 
 if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}Запустите от root: sudo bipbop${NC}" 
+   echo -e "${RED}Запустите от root: sudo bipbop${NC}"
    exit 1
+fi
+
+# Auto-install 'bipbop' command
+if [[ -f "$0" && "$0" != "$INSTALL_DIR/bipbop" ]]; then
+    cp -f "$0" "$INSTALL_DIR/bipbop" 2>/dev/null
+    chmod +x "$INSTALL_DIR/bipbop" 2>/dev/null
 fi
 
 # ==============================================================================
