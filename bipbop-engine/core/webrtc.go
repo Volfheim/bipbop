@@ -85,11 +85,13 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 
 	p.pcSub.OnDataChannel(func(dc *webrtc.DataChannel) {
 		getLog().Info(fmt.Sprintf("[RTC] Received DataChannel: %s", dc.Label()))
-		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-			if p.onData != nil && len(msg.Data) > 0 {
-				p.onData(msg.Data)
-			}
-		})
+		if dc.Label() == "bipbop" {
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				if p.onData != nil && len(msg.Data) > 0 {
+					p.onData(msg.Data)
+				}
+			})
+		}
 	})
 
 	ws, _, err := websocket.DefaultDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
