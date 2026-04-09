@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,47 +57,28 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 
 	getLog().Info("[API] Resolving cloud-api.yandex.ru...")
 
-	// Custom DNS resolver: try system DNS first, then Yandex DNS (77.88.8.8) as fallback
-	customResolver := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 5 * time.Second}
-			// Try Yandex DNS which should always be whitelisted
-			return d.DialContext(ctx, "udp", "77.88.8.8:53")
-		},
-	}
-
-	customDialer := &net.Dialer{
-		Timeout:  10 * time.Second,
-		Resolver: customResolver,
-	}
-
-	// Build transport
-	var transport http.RoundTripper
+	// Build HTTP client
+	var client *http.Client
 
 	upstream := GetUpstream()
 	if upstream != "" {
 		getLog().Info(fmt.Sprintf("[API] Using upstream proxy: %s", upstream))
-		proxyDialer, proxyErr := proxy.SOCKS5("tcp", upstream, nil, customDialer)
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		proxyDialer, proxyErr := proxy.SOCKS5("tcp", upstream, nil, dialer)
 		if proxyErr == nil {
-			transport = &http.Transport{
-				Dial: proxyDialer.Dial,
+			client = &http.Client{
+				Transport: &http.Transport{Dial: proxyDialer.Dial},
+				Timeout:   15 * time.Second,
 			}
 		} else {
 			getLog().Warn(fmt.Sprintf("[API] Upstream proxy error: %v, falling back to direct", proxyErr))
-			transport = &http.Transport{
-				DialContext: customDialer.DialContext,
-			}
+			client = &http.Client{Timeout: 15 * time.Second}
 		}
 	} else {
-		transport = &http.Transport{
-			DialContext: customDialer.DialContext,
-		}
-	}
-
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   15 * time.Second,
+		// Use default transport — on Android it uses cgo DNS (getaddrinfo)
+		// which correctly resolves via ISP DNS under DPI whitelists.
+		// Creating a custom Transport breaks this by switching to pure-Go DNS.
+		client = &http.Client{Timeout: 15 * time.Second}
 	}
 
 	getLog().Info("[API] Sending request to Yandex Telemost API...")

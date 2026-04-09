@@ -57,35 +57,28 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 
 	getLog().Info("[API] Resolving cloud-api.yandex.ru...")
 
-	// Use system DNS (ISP DNS works under DPI whitelists)
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
-
-	// Build transport
-	var transport http.RoundTripper
+	// Build HTTP client
+	var client *http.Client
 
 	upstream := GetUpstream()
 	if upstream != "" {
 		getLog().Info(fmt.Sprintf("[API] Using upstream proxy: %s", upstream))
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
 		proxyDialer, proxyErr := proxy.SOCKS5("tcp", upstream, nil, dialer)
 		if proxyErr == nil {
-			transport = &http.Transport{
-				Dial: proxyDialer.Dial,
+			client = &http.Client{
+				Transport: &http.Transport{Dial: proxyDialer.Dial},
+				Timeout:   15 * time.Second,
 			}
 		} else {
 			getLog().Warn(fmt.Sprintf("[API] Upstream proxy error: %v, falling back to direct", proxyErr))
-			transport = &http.Transport{
-				DialContext: dialer.DialContext,
-			}
+			client = &http.Client{Timeout: 15 * time.Second}
 		}
 	} else {
-		transport = &http.Transport{
-			DialContext: dialer.DialContext,
-		}
-	}
-
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   15 * time.Second,
+		// Use default transport — on Android it uses cgo DNS (getaddrinfo)
+		// which correctly resolves via ISP DNS under DPI whitelists.
+		// Creating a custom Transport breaks this by switching to pure-Go DNS.
+		client = &http.Client{Timeout: 15 * time.Second}
 	}
 
 	getLog().Info("[API] Sending request to Yandex Telemost API...")
