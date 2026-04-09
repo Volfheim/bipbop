@@ -1,15 +1,14 @@
 package cli
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"sync"
+	"time"
 
 	"github.com/armon/go-socks5"
-	"github.com/hashicorp/yamux"
 	"github.com/spf13/cobra"
-	"github.com/xtaci/kcp-go/v5"
 
 	"github.com/volfheim/bipbop/core"
 )
@@ -25,8 +24,8 @@ func NewServerCmd() *cobra.Command {
 		Short: "Start the VPN server daemon",
 		Run:   runServer,
 	}
-	cmd.Flags().StringVarP(&listenAddr, "listen", "l", "0.0.0.0:8443", "Listen address (ip:port)")
-	cmd.Flags().StringVarP(&password, "password", "p", "", "Secret password (will generate if empty)")
+	cmd.Flags().StringVarP(&listenAddr, "listen", "l", "", "Telemost Room URL")
+	cmd.Flags().StringVarP(&password, "password", "p", "", "Secret password")
 	return cmd
 }
 
@@ -40,9 +39,12 @@ func NewGenerateCmd() *cobra.Command {
 				rand.Read(b)
 				password = hex.EncodeToString(b)
 			}
-			ip := "94.232.44.122" // Default or fetched IP
-			key := core.EncodeSmartKey(ip, "8443", password)
-			fmt.Printf("\n\033[33m┌─── SMART KEY [%s] ──────────────────────────────────────────┐\033[0m\n", ip)
+			room := listenAddr
+			if room == "" {
+				room = "https://telemost.yandex.ru/j/1234567890" // Пример
+			}
+			key := core.EncodeSmartKey(room, password)
+			fmt.Printf("\n\033[33m┌─── SMART KEY ───────────────────────────────────────────────┐\033[0m\n")
 			fmt.Printf("\033[33m│\033[0m \033[32m%s\033[0m\n", key)
 			fmt.Printf("\033[33m└─────────────────────────────────────────────────────────────┘\033[0m\n\n")
 		},
@@ -58,45 +60,37 @@ func runServer(cmd *cobra.Command, args []string) {
 		fmt.Printf("[INFO] Auto-generated server password: %s\n", password)
 	}
 
-	blk, _ := kcp.NewAESBlockCrypt(core.DeriveKey(password))
-	l, err := kcp.ListenWithOptions(listenAddr, blk, 10, 3)
-	if err != nil {
-		fmt.Printf("[FATAL] KCP Listen: %v\n", err)
-		return
+	fmt.Printf("[INFO] Volfheim Server (Host) running in Room: \033[32m%s\033[0m\n", listenAddr)
+
+	ctx := context.Background()
+	sess := &core.Session{}
+	rch := make(chan struct{}, 1)
+
+	ym, cl, err := core.Establish(listenAddr, password, true)
+	if err == nil {
+		sess.Set(ym, cl)
 	}
 
-	fmt.Printf("[INFO] Volfheim Server listening on \033[32m%s\033[0m\n", listenAddr)
+	go core.HealthLoop(ctx, sess, rch)
+	go core.ReconnectLoop(ctx, sess, listenAddr, password, true, rch)
 
 	srv, _ := socks5.New(&socks5.Config{})
-	var wg sync.WaitGroup
 
 	for {
-		s, err := l.AcceptKCP()
-		if err != nil {
+		y, ok := sess.Get()
+		if !ok || y == nil {
+			time.Sleep(1 * time.Second)
 			continue
 		}
-		s.SetNoDelay(1, 10, 2, 1)
-		s.SetWindowSize(1024, 1024)
-		s.SetStreamMode(true)
 
-		wg.Add(1)
-		go func(s *kcp.UDPSession) {
-			defer wg.Done()
-			defer s.Close()
-			ym, err := yamux.Server(s, core.YmxCfg())
-			if err != nil {
-				return
-			}
-			defer ym.Close()
-			fmt.Printf("[INFO] Connected ← \033[33m%s\033[0m\n", s.RemoteAddr())
-			for {
-				st, err := ym.AcceptStream()
-				if err != nil {
-					fmt.Printf("[INFO] Disconnected ✕ \033[33m%s\033[0m\n", s.RemoteAddr())
-					return
-				}
-				go srv.ServeConn(st)
-			}
-		}(s)
+		st, err := y.AcceptStream()
+		if err != nil {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		go func() {
+			fmt.Printf("[INFO] Accepted new stream\n")
+			srv.ServeConn(st)
+		}()
 	}
 }

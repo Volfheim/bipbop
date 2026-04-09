@@ -1,4 +1,4 @@
-module github.com/volfheim/bipbop/core
+module github.com/lionheart-vpn/lionheart/core
 
 go 1.25.0
 

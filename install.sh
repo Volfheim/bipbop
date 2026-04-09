@@ -42,30 +42,12 @@ print_banner() {
     echo -e "${NC}================================================="
 }
 
-get_public_ip() {
-    local ip=""
-    ip=$(curl -s --max-time 3 https://api.ipify.org)
-    if [[ -z "$ip" || ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        ip=$(curl -s --max-time 3 https://ifconfig.me)
-    fi
-    echo "$ip"
-}
-
-get_password() {
+get_room_url() {
     if [[ -f "$CONF_FILE" ]]; then
         source "$CONF_FILE"
-        echo "$VOLFHEIM_PASSWORD"
+        echo "$VOLFHEIM_ROOM_URL"
     else
         echo ""
-    fi
-}
-
-get_port() {
-    if [[ -f "$CONF_FILE" ]]; then
-        source "$CONF_FILE"
-        echo "$VOLFHEIM_PORT"
-    else
-        echo "8443"
     fi
 }
 
@@ -77,26 +59,31 @@ install_server() {
     mkdir -p "$CONF_DIR"
 
     # Чтение или создание конфигурации
-    local port
-    port=$(get_port)
+    local room_url
+    room_url=$(get_room_url)
     local password
-    password=$(get_password)
 
-    if [[ -z "$password" ]]; then
+    if [[ -z "$room_url" ]]; then
         # Генерация 16-байтного случайного пароля в HEX
         password=$(openssl rand -hex 16)
         
-        echo -e "${YELLOW}Какой порт использовать для сервера? (По умолчанию: 8443)${NC}"
-        read -r -p "Порт: " input_port
-        port=${input_port:-8443}
+        echo -e "${YELLOW}Для маскировки сервера под звонок Yandex Telemost, вам необходимо создать встречу в Яндексе.${NC}"
+        echo -e "${YELLOW}Перейдите на https://telemost.yandex.ru, нажмите 'Запланировать' и скопируйте Вечную Ссылку.${NC}"
+        read -r -p "Ссылка на Телемост (Room URL): " input_url
+        room_url=${input_url}
+
+        if [[ -z "$room_url" || ! "$room_url" == *"telemost.yandex.ru"* ]]; then
+            echo -e "${RED}[✗] Некорректная ссылка. Установка прервана.${NC}"
+            exit 1
+        fi
 
         # Сохранение конфига
         echo "VOLFHEIM_PASSWORD=$password" > "$CONF_FILE"
-        echo "VOLFHEIM_PORT=$port" >> "$CONF_FILE"
+        echo "VOLFHEIM_ROOM_URL=$room_url" >> "$CONF_FILE"
         chmod 600 "$CONF_FILE"
-        echo -e "${GREEN}[+] Конфигурация создана (Порт: $port)${NC}"
+        echo -e "${GREEN}[+] Конфигурация создана (Комната: $room_url)${NC}"
     else
-        echo -e "${GREEN}[+] Найдена существующая конфигурация (Порт: $port)${NC}"
+        echo -e "${GREEN}[+] Найдена существующая конфигурация (Комната: $room_url)${NC}"
     fi
 
     echo -e "${CYAN}>>> Загрузка последней версии с GitHub...${NC}"
@@ -126,7 +113,7 @@ User=root
 # Лимит файлов для высоконагруженных сокетов
 LimitNOFILE=51200
 EnvironmentFile=$CONF_FILE
-ExecStart=$INSTALL_DIR/$BIN_NAME server --listen 0.0.0.0:\${VOLFHEIM_PORT} --password \${VOLFHEIM_PASSWORD}
+ExecStart=$INSTALL_DIR/$BIN_NAME server --listen \${VOLFHEIM_ROOM_URL} --password \${VOLFHEIM_PASSWORD}
 Restart=always
 RestartSec=5
 
@@ -180,23 +167,14 @@ add_client() {
 
     # Генерация ключа через сам сервер
     local password
-    password=$(get_password)
-    
-    # Ключ может меняться в зависимости от IP, берём внешний IP
-    local ip
-    ip=$(get_public_ip)
-    local port
-    port=$(get_port)
+    password=$(grep VOLFHEIM_PASSWORD "$CONF_FILE" | cut -d '=' -f 2)
+    local room_url
+    room_url=$(get_room_url)
     
     echo -e "Генерация ключа для ${YELLOW}$client_name${NC}..."
     
-    # Мы генерируем raw-ключ и формируем Smart-Key. 
-    # Так как `volfheim-server gen` может быть не адаптирован к передаче кастомного IP через аргументы,
-    # Мы вызовем его, передав текущий пароль, или сгенерируем ключ с помощью скрипта.
-    # Так как наш `server gen` генерирует ключ с захардкоженным IP, мы можем сгенерировать Base64 вручную
-    # Формат BipBop: base64_url("$ip:$port|$password")
-    
-    local raw_data="$ip:$port|$password"
+    # Формат BipBop (Yandex Telemost): base64_url("RoomURL|password")
+    local raw_data="$room_url|$password"
     # Формируем URL-safe Base64 без паддинга
     local smart_key
     smart_key=$(echo -n "$raw_data" | base64 | tr '+/' '-_' | tr -d '=' | tr -d '\n')

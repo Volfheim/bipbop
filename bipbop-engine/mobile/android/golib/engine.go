@@ -30,7 +30,6 @@ type vpnEngine struct {
 }
 
 func (e *vpnEngine) run() error {
-	cache := &core.CredsCache{}
 	socksAddr := "127.0.0.1:13349"
 
 	// 1. Start SOCKS5 once
@@ -82,7 +81,7 @@ func (e *vpnEngine) run() error {
 		}
 
 		logToApp("info", "[ENG] Establishing tunnel...")
-		ym, cl, err := core.Establish(cache, e.peer, e.pw, false)
+		ym, cl, err := core.Establish(e.peer, e.pw, false)
 		if err != nil {
 			logToApp("error", fmt.Sprintf("[ENG] Establish failed: %v", err))
 			emit("reconnecting")

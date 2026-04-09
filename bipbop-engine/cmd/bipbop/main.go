@@ -24,9 +24,6 @@ import (
 	"time"
 
 	"github.com/armon/go-socks5"
-	"github.com/hashicorp/yamux"
-	"github.com/xtaci/kcp-go/v5"
-
 	"github.com/volfheim/bipbop/core"
 )
 
@@ -255,17 +252,11 @@ func startService() {
 func wizard() *Cfg {
 	c := &Cfg{}
 	if ask("Mode (1-server, 2-client): ") == "1" {
-		c.Role, c.ServerListen = "server", "0.0.0.0:"+core.DefPort
+		c.Role, c.ServerListen = "server", ask("Yandex Telemost Room URL: ")
 		b := make([]byte, 16)
 		rand.Read(b)
 		c.Password = hex.EncodeToString(b)
-		sp := spinner("Detecting public IP")
-		ip := pubIP()
-		sp.done()
-		if ip == "" || !strings.Contains(ip, ".") {
-			ip = ask("IP manually: ")
-		}
-		smartKey := core.EncodeSmartKey(ip, core.DefPort, c.Password)
+		smartKey := core.EncodeSmartKey(c.ServerListen, c.Password)
 
 		fmt.Printf("\n\033[33m┌─── SMART KEY ───────────────────────────────────┐\033[0m\n")
 		fmt.Printf("\033[33m│\033[0m \033[32m%s\033[0m\n", smartKey)
@@ -310,18 +301,17 @@ func wizard() *Cfg {
 func runClient(ctx context.Context, peer, pw string) {
 	killSiblings()
 
-	cache := &core.CredsCache{}
 	sess := &core.Session{}
 	rch := make(chan struct{}, 1)
 
-	ym, cl, err := core.Establish(cache, peer, pw, true)
+	ym, cl, err := core.Establish(peer, pw, false)
 	if err != nil {
 		die("Tunnel: %v", err)
 	}
 	sess.Set(ym, cl)
 
 	go core.HealthLoop(ctx, sess, rch)
-	go core.ReconnectLoop(ctx, sess, cache, peer, pw, rch)
+	go core.ReconnectLoop(ctx, sess, peer, pw, false, rch)
 
 	l, err := net.Listen("tcp", "0.0.0.0:1080")
 	if err != nil {
@@ -375,70 +365,51 @@ func runClient(ctx context.Context, peer, pw string) {
 // ─── Server ───
 
 func runServer(ctx context.Context, addr, pw string) {
-	killSiblings()
+	inf("Server (Telemost DataChannel Host) in Room: \033[32m%s\033[0m", addr)
 
-	blk, _ := kcp.NewAESBlockCrypt(core.DeriveKey(pw))
-	l, err := kcp.ListenWithOptions(addr, blk, 10, 3)
-	if err != nil {
-		die("KCP: %v", err)
+	smartKey := core.EncodeSmartKey(addr, pw)
+	fmt.Printf("\n\033[33m┌─── SMART KEY ───────────────────────────────────┐\033[0m\n")
+	fmt.Printf("\033[33m│\033[0m \033[32m%s\033[0m\n", smartKey)
+	fmt.Printf("\033[33m└─────────────────────────────────────────────────┘\033[0m\n\n")
+	printQR(smartKey)
+	fmt.Println()
+
+	sess := &core.Session{}
+	rch := make(chan struct{}, 1)
+
+	ym, cl, err := core.Establish(addr, pw, true)
+	if err == nil {
+		sess.Set(ym, cl)
 	}
 
-	inf("Server: \033[32m%s\033[0m", addr)
-
-	// Show smart key + QR for convenience
-	host, port, _ := net.SplitHostPort(addr)
-	if host == "0.0.0.0" || host == "" {
-		sp := spinner("Detecting public IP")
-		host = pubIP()
-		sp.done()
-	}
-	if host != "" {
-		smartKey := core.EncodeSmartKey(host, port, pw)
-		fmt.Printf("\n\033[33m┌─── SMART KEY ───────────────────────────────────┐\033[0m\n")
-		fmt.Printf("\033[33m│\033[0m \033[32m%s\033[0m\n", smartKey)
-		fmt.Printf("\033[33m└─────────────────────────────────────────────────┘\033[0m\n\n")
-		printQR(smartKey)
-		fmt.Println()
-	}
+	go core.HealthLoop(ctx, sess, rch)
+	go core.ReconnectLoop(ctx, sess, addr, pw, true, rch)
 
 	srv, _ := socks5.New(&socks5.Config{})
-	go func() { <-ctx.Done(); l.Close() }()
+	go func() { <-ctx.Done(); sess.Stop() }()
 
-	var wg sync.WaitGroup
 	for {
-		s, err := l.AcceptKCP()
-		if err != nil {
+		y, ok := sess.Get()
+		if !ok || y == nil {
 			select {
 			case <-ctx.Done():
-				wg.Wait()
 				return
-			default:
+			case <-time.After(1 * time.Second):
 				continue
 			}
 		}
-		s.SetNoDelay(1, 10, 2, 1)
-		s.SetWindowSize(1024, 1024)
-		s.SetStreamMode(true)
 
-		wg.Add(1)
-		go func(s *kcp.UDPSession) {
-			defer wg.Done()
-			defer s.Close()
-			ym, err := yamux.Server(s, core.YmxCfg())
-			if err != nil {
+		st, err := y.AcceptStream()
+		if err != nil {
+			// Session probably dropping, wait for HealthLoop to trigger reconnect
+			select {
+			case <-ctx.Done():
 				return
+			case <-time.After(1 * time.Second):
+				continue
 			}
-			defer ym.Close()
-			inf("← \033[33m%s\033[0m", s.RemoteAddr())
-			for {
-				st, err := ym.AcceptStream()
-				if err != nil {
-					inf("✕ \033[33m%s\033[0m", s.RemoteAddr())
-					return
-				}
-				go srv.ServeConn(st)
-			}
-		}(s)
+		}
+		go srv.ServeConn(st)
 	}
 }
 

@@ -116,8 +116,8 @@ func YmxCfg() *yamux.Config {
 	c := yamux.DefaultConfig()
 	c.EnableKeepAlive = true
 	c.KeepAliveInterval = 10 * time.Second
-	c.ConnectionWriteTimeout = 10 * time.Second
-	c.StreamOpenTimeout = 10 * time.Second
+	c.ConnectionWriteTimeout = 20 * time.Second
+	c.StreamOpenTimeout = 20 * time.Second
 	return c
 }
 
@@ -137,6 +137,23 @@ func (m *MultiCloser) Close() error {
 }
 
 // --- TURN dial ---
+
+func DialDirect(peer, pw string) (*yamux.Session, io.Closer, error) {
+	blk, _ := kcp.NewAESBlockCrypt(DeriveKey(pw))
+	kc, err := kcp.DialWithOptions(peer, blk, 10, 3)
+	if err != nil {
+		return nil, nil, err
+	}
+	kc.SetNoDelay(0, 40, 0, 0)
+	kc.SetWindowSize(64, 64)
+	kc.SetStreamMode(true)
+	ym, err := yamux.Client(kc, YmxCfg())
+	if err != nil {
+		kc.Close()
+		return nil, nil, err
+	}
+	return ym, kc, nil
+}
 
 func DialTURN(cred TurnCred, peer, pw string) (*yamux.Session, io.Closer, error) {
 	addr := strings.TrimPrefix(strings.TrimPrefix(strings.Split(cred.URL, "?")[0], "turn:"), "turns:")
@@ -173,8 +190,8 @@ func DialTURN(cred TurnCred, peer, pw string) (*yamux.Session, io.Closer, error)
 		uc.Close()
 		return nil, nil, err
 	}
-	kc.SetNoDelay(1, 10, 2, 1)
-	kc.SetWindowSize(1024, 1024)
+	kc.SetNoDelay(0, 40, 0, 0)
+	kc.SetWindowSize(64, 64)
 	kc.SetStreamMode(true)
 	ym, err := yamux.Client(kc, YmxCfg())
 	if err != nil {
@@ -186,49 +203,102 @@ func DialTURN(cred TurnCred, peer, pw string) (*yamux.Session, io.Closer, error)
 	return ym, &MultiCloser{[]io.Closer{ym, kc, CloserFunc(func() { tc.Close() }), uc}}, nil
 }
 
-// --- Establish tunnel (try all TURN servers) ---
+// --- Establish tunnel (try all TURN servers + Direct Fallback) ---
 
 func Establish(cache *CredsCache, peer, pw string, force bool) (*yamux.Session, io.Closer, error) {
-	creds, err := cache.Get(force)
-	if err != nil {
-		return nil, nil, err
-	}
-	var turnCreds []TurnCred
-	for _, c := range creds {
-		if strings.HasPrefix(c.URL, "turn") {
-			turnCreds = append(turnCreds, c)
-		}
-	}
-	if len(turnCreds) == 0 {
-		return nil, nil, fmt.Errorf("no TURN servers found")
-	}
 	log := getLog()
-	lis := getLis()
-	var lastErr error
-	for i, c := range turnCreds {
-		log.Info(fmt.Sprintf("TURN %d/%d: %s", i+1, len(turnCreds), c.URL))
-		lis.OnTurnInfo(c.URL)
-		ym, cl, err := DialTURN(c, peer, pw)
-		if err != nil {
-			log.Warn(fmt.Sprintf("TURN failed: %v", err))
-			lastErr = err
-			continue
-		}
-		ch := make(chan error, 1)
-		go func() { _, e := ym.Ping(); ch <- e }()
-		select {
-		case e := <-ch:
-			if e == nil {
-				return ym, cl, nil
+	
+	// Попытка прямого подключения, если WB заблокировал транзитные пакеты на внешние IP
+	var turnCreds []TurnCred
+	
+	creds, err := cache.Get(force)
+	if err == nil {
+		for _, c := range creds {
+			if strings.HasPrefix(c.URL, "turn") {
+				turnCreds = append(turnCreds, c)
 			}
-			lastErr = e
-		case <-time.After(5 * time.Second):
-			lastErr = fmt.Errorf("ping timeout")
 		}
-		cl.Close()
-		log.Warn(fmt.Sprintf("  %v", lastErr))
+	} else {
+		log.Warn("Failed to fetch WB creds, trying Direct Connection...")
 	}
-	return nil, nil, fmt.Errorf("all TURN servers unreachable: %v", lastErr)
+
+	// Всегда добавляем DIRECT как последний (или единственный) шанс
+	turnCreds = append(turnCreds, TurnCred{URL: "DIRECT"})
+
+	type result struct {
+		ym  *yamux.Session
+		cl  io.Closer
+		err error
+	}
+	
+	winner := make(chan result, 1)
+	failedCount := atomic.Int32{}
+	total := int32(len(turnCreds))
+	
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	for _, c := range turnCreds {
+		go func(cr TurnCred) {
+			var ym *yamux.Session
+			var cl io.Closer
+			var err error
+			
+			if cr.URL == "DIRECT" {
+				log.Info("Trying fallback Direct connection to KCP Server...")
+				ym, cl, err = DialDirect(peer, pw)
+			} else {
+				ym, cl, err = DialTURN(cr, peer, pw)
+			}
+			
+			if err != nil {
+				if int(failedCount.Add(1)) == int(total) {
+					select {
+					case winner <- result{err: err}:
+					default:
+					}
+				}
+				return
+			}
+			
+			// Ping check
+			pingCh := make(chan error, 1)
+			go func() { _, e := ym.Ping(); pingCh <- e }()
+			
+			var pingErr error
+			select {
+			case pingErr = <-pingCh:
+			case <-time.After(5 * time.Second):
+				pingErr = fmt.Errorf("ping timeout")
+			case <-ctx.Done():
+				cl.Close()
+				return
+			}
+
+			if pingErr == nil {
+				select {
+				case winner <- result{ym: ym, cl: cl}:
+					log.Info(fmt.Sprintf("[CORE] TURN server won the race: %s", cr.URL))
+				case <-ctx.Done():
+					cl.Close()
+				}
+			} else {
+				cl.Close()
+				if int(failedCount.Add(1)) == int(total) {
+					select {
+					case winner <- result{err: pingErr}:
+					default:
+					}
+				}
+			}
+		}(c)
+	}
+
+	res := <-winner
+	if res.err != nil {
+		return nil, nil, fmt.Errorf("all TURN servers unreachable: %v", res.err)
+	}
+	return res.ym, res.cl, nil
 }
 
 // --- Session wrapper ---
@@ -363,4 +433,57 @@ func ReconnectLoop(ctx context.Context, sess *Session, cache *CredsCache, peer, 
 			}
 		}
 	}
+}
+
+// SocksHandshake performs the initial SOCKS5 handshake and returns the target address.
+func SocksHandshake(c net.Conn) (string, error) {
+	buf := make([]byte, 258)
+	// 1. Version + Methods
+	if _, err := io.ReadFull(c, buf[:2]); err != nil || buf[0] != 0x05 {
+		return "", fmt.Errorf("socks5 only")
+	}
+	n := int(buf[1])
+	if n > 0 {
+		if _, err := io.ReadFull(c, buf[:n]); err != nil {
+			return "", err
+		}
+	}
+	// No auth
+	c.Write([]byte{0x05, 0x00})
+
+	// 2. Request
+	if _, err := io.ReadFull(c, buf[:4]); err != nil || buf[0] != 0x05 || buf[1] != 0x01 {
+		return "", fmt.Errorf("socks5 connect only")
+	}
+	
+	addrType := buf[3]
+	var host string
+	switch addrType {
+	case 0x01: // IPv4
+		b := make([]byte, 4)
+		if _, err := io.ReadFull(c, b); err != nil { return "", err }
+		host = net.IP(b).String()
+	case 0x03: // Domain
+		b := make([]byte, 1)
+		if _, err := io.ReadFull(c, b); err != nil { return "", err }
+		sz := int(b[0])
+		db := make([]byte, sz)
+		if _, err := io.ReadFull(c, db); err != nil { return "", err }
+		host = string(db)
+	case 0x04: // IPv6
+		b := make([]byte, 16)
+		if _, err := io.ReadFull(c, b); err != nil { return "", err }
+		host = net.IP(b).String()
+	default:
+		return "", fmt.Errorf("unsupported addr type %d", addrType)
+	}
+	
+	pb := make([]byte, 2)
+	if _, err := io.ReadFull(c, pb); err != nil { return "", err }
+	port := int(pb[0])<<8 | int(pb[1])
+	
+	// Reply success (dummy BND.ADDR)
+	c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+	
+	return fmt.Sprintf("%s:%d", host, port), nil
 }
