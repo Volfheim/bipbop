@@ -15,8 +15,6 @@ import (
 	"time"
 
 	"github.com/hashicorp/yamux"
-	"github.com/pion/turn/v4"
-	"github.com/xtaci/kcp-go/v5"
 )
 
 const (
@@ -51,8 +49,8 @@ func (nopLogger) Error(string) {}
 
 type nopStatus struct{}
 
-func (nopStatus) OnStatus(string)     {}
-func (nopStatus) OnTurnInfo(string)   {}
+func (nopStatus) OnStatus(string)      {}
+func (nopStatus) OnTurnInfo(string)    {}
 func (nopStatus) OnStats(int64, int64) {}
 
 // --- globals set by the host ---
@@ -63,11 +61,11 @@ var (
 	Lis StatusListener = nopStatus{}
 )
 
-func SetLogger(l Logger)         { mu.Lock(); Log = l; mu.Unlock() }
+func SetLogger(l Logger)           { mu.Lock(); Log = l; mu.Unlock() }
 func SetListener(l StatusListener) { mu.Lock(); Lis = l; mu.Unlock() }
 
-func getLog() Logger           { mu.Lock(); defer mu.Unlock(); return Log }
-func getLis() StatusListener   { mu.Lock(); defer mu.Unlock(); return Lis }
+func getLog() Logger         { mu.Lock(); defer mu.Unlock(); return Log }
+func getLis() StatusListener { mu.Lock(); defer mu.Unlock(); return Lis }
 
 // --- Key derivation ---
 
@@ -75,7 +73,7 @@ func DeriveKey(pw string) []byte { h := sha256.Sum256([]byte(pw)); return h[:] }
 
 // --- Smart-key ---
 
-func ParseSmartKey(k string) (peer, pw string, err error) {
+func ParseSmartKey(k string) (roomURL, pw string, err error) {
 	var d []byte
 	d, err = base64.RawURLEncoding.DecodeString(k)
 	if err != nil {
@@ -88,26 +86,20 @@ func ParseSmartKey(k string) (peer, pw string, err error) {
 	if len(parts) != 2 {
 		return "", "", fmt.Errorf("corrupted smart-key")
 	}
-	peer = parts[0]
-	if !strings.Contains(peer, ":") {
-		peer += ":" + DefPort
-	}
+	roomURL = parts[0]
 	pw = parts[1]
 	return
 }
 
-func EncodeSmartKey(ip, port, password string) string {
-	raw := ip + ":" + port + "|" + password
+func EncodeSmartKey(roomURL, password string) string {
+	raw := roomURL + "|" + password
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
+// Функции-заглушки для обратной совместимости вызовов извне (если были)
 func SmartKeyServerIP(k string) (string, error) {
-	peer, _, err := ParseSmartKey(k)
-	if err != nil {
-		return "", err
-	}
-	host, _, _ := net.SplitHostPort(peer)
-	return host, nil
+	room, _, err := ParseSmartKey(k)
+	return room, err
 }
 
 // --- Yamux config ---
@@ -136,179 +128,55 @@ func (m *MultiCloser) Close() error {
 	return nil
 }
 
-// --- TURN dial ---
+// --- Establish tunnel (Telemost DataChannel) ---
 
-func DialDirect(peer, pw string) (*yamux.Session, io.Closer, error) {
-	blk, _ := kcp.NewAESBlockCrypt(DeriveKey(pw))
-	kc, err := kcp.DialWithOptions(peer, blk, 10, 3)
-	if err != nil {
-		return nil, nil, err
-	}
-	kc.SetNoDelay(0, 40, 0, 0)
-	kc.SetWindowSize(64, 64)
-	kc.SetStreamMode(true)
-	ym, err := yamux.Client(kc, YmxCfg())
-	if err != nil {
-		kc.Close()
-		return nil, nil, err
-	}
-	return ym, kc, nil
-}
-
-func DialTURN(cred TurnCred, peer, pw string) (*yamux.Session, io.Closer, error) {
-	addr := strings.TrimPrefix(strings.TrimPrefix(strings.Split(cred.URL, "?")[0], "turn:"), "turns:")
-	uc, err := net.ListenUDP("udp", nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	tc, err := turn.NewClient(&turn.ClientConfig{
-		STUNServerAddr: addr,
-		TURNServerAddr: addr,
-		Conn:           uc,
-		Username:       cred.User,
-		Password:       cred.Pass,
-	})
-	if err != nil {
-		uc.Close()
-		return nil, nil, err
-	}
-	if err := tc.Listen(); err != nil {
-		tc.Close()
-		uc.Close()
-		return nil, nil, err
-	}
-	relay, err := tc.Allocate()
-	if err != nil {
-		tc.Close()
-		uc.Close()
-		return nil, nil, err
-	}
-	blk, _ := kcp.NewAESBlockCrypt(DeriveKey(pw))
-	kc, err := kcp.NewConn(peer, blk, 10, 3, relay)
-	if err != nil {
-		tc.Close()
-		uc.Close()
-		return nil, nil, err
-	}
-	kc.SetNoDelay(0, 40, 0, 0)
-	kc.SetWindowSize(64, 64)
-	kc.SetStreamMode(true)
-	ym, err := yamux.Client(kc, YmxCfg())
-	if err != nil {
-		kc.Close()
-		tc.Close()
-		uc.Close()
-		return nil, nil, err
-	}
-	return ym, &MultiCloser{[]io.Closer{ym, kc, CloserFunc(func() { tc.Close() }), uc}}, nil
-}
-
-// --- Establish tunnel (try all TURN servers + Direct Fallback) ---
-
-func Establish(cache *CredsCache, peer, pw string, force bool) (*yamux.Session, io.Closer, error) {
-	log := getLog()
-	
-	// Попытка прямого подключения, если WB заблокировал транзитные пакеты на внешние IP
-	var turnCreds []TurnCred
-	
-	creds, err := cache.Get(force)
-	if err == nil {
-		for _, c := range creds {
-			if strings.HasPrefix(c.URL, "turn") {
-				turnCreds = append(turnCreds, c)
-			}
-		}
-	} else {
-		log.Warn("Failed to fetch WB creds, trying Direct Connection...")
-	}
-
-	// Всегда добавляем DIRECT как последний (или единственный) шанс
-	turnCreds = append(turnCreds, TurnCred{URL: "DIRECT"})
-
-	type result struct {
-		ym  *yamux.Session
-		cl  io.Closer
-		err error
-	}
-	
-	winner := make(chan result, 1)
-	failedCount := atomic.Int32{}
-	total := int32(len(turnCreds))
-	
-	ctx, cancel := context.WithCancel(context.Background())
+func Establish(roomURL, pw string, isServer bool) (*yamux.Session, io.Closer, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	for _, c := range turnCreds {
-		go func(cr TurnCred) {
-			var ym *yamux.Session
-			var cl io.Closer
-			var err error
-			
-			if cr.URL == "DIRECT" {
-				log.Info("Trying fallback Direct connection to KCP Server...")
-				ym, cl, err = DialDirect(peer, pw)
-			} else {
-				ym, cl, err = DialTURN(cr, peer, pw)
-			}
-			
-			if err != nil {
-				if int(failedCount.Add(1)) == int(total) {
-					select {
-					case winner <- result{err: err}:
-					default:
-					}
-				}
-				return
-			}
-			
-			// Ping check
-			pingCh := make(chan error, 1)
-			go func() { _, e := ym.Ping(); pingCh <- e }()
-			
-			var pingErr error
-			select {
-			case pingErr = <-pingCh:
-			case <-time.After(5 * time.Second):
-				pingErr = fmt.Errorf("ping timeout")
-			case <-ctx.Done():
-				cl.Close()
-				return
-			}
-
-			if pingErr == nil {
-				select {
-				case winner <- result{ym: ym, cl: cl}:
-					log.Info(fmt.Sprintf("[CORE] TURN server won the race: %s", cr.URL))
-				case <-ctx.Done():
-					cl.Close()
-				}
-			} else {
-				cl.Close()
-				if int(failedCount.Add(1)) == int(total) {
-					select {
-					case winner <- result{err: pingErr}:
-					default:
-					}
-				}
-			}
-		}(c)
+	name := "Guest"
+	if isServer {
+		name = "Host"
 	}
 
-	res := <-winner
-	if res.err != nil {
-		return nil, nil, fmt.Errorf("all TURN servers unreachable: %v", res.err)
+	peer, err := NewWebRTCPeer(roomURL, name, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to init WebRTC: %w", err)
 	}
-	return res.ym, res.cl, nil
+
+	// Адаптер (DCStream) сам поставит onData callback внутрь peer
+	stream := NewDCStream(peer)
+
+	log := getLog()
+	log.Info(fmt.Sprintf("[ENG] Connecting to Telemost Room... (%s)", name))
+
+	if err := peer.Connect(ctx); err != nil {
+		stream.Close()
+		return nil, nil, fmt.Errorf("telemost connect error: %w", err)
+	}
+
+	var ym *yamux.Session
+	if isServer {
+		ym, err = yamux.Server(stream, YmxCfg())
+	} else {
+		ym, err = yamux.Client(stream, YmxCfg())
+	}
+	if err != nil {
+		stream.Close()
+		return nil, nil, fmt.Errorf("yamux error: %w", err)
+	}
+
+	return ym, &MultiCloser{[]io.Closer{ym, stream}}, nil
 }
 
 // --- Session wrapper ---
 
 type Session struct {
 	sync.RWMutex
-	Ym *yamux.Session
-	Cl io.Closer
-	Ch chan struct{}
-	Ok bool
+	Ym      *yamux.Session
+	Cl      io.Closer
+	Ch      chan struct{}
+	Ok      bool
 	TxBytes atomic.Int64
 	RxBytes atomic.Int64
 }
@@ -397,7 +265,7 @@ func HealthLoop(ctx context.Context, sess *Session, rch chan<- struct{}) {
 	}
 }
 
-func ReconnectLoop(ctx context.Context, sess *Session, cache *CredsCache, peer, pw string, rch <-chan struct{}) {
+func ReconnectLoop(ctx context.Context, sess *Session, roomURL, pw string, isServer bool, rch <-chan struct{}) {
 	log := getLog()
 	lis := getLis()
 	for {
@@ -414,7 +282,7 @@ func ReconnectLoop(ctx context.Context, sess *Session, cache *CredsCache, peer, 
 				default:
 				}
 				log.Info(fmt.Sprintf("Reconnecting (#%d)...", a))
-				y, c, e := Establish(cache, peer, pw, a > 3)
+				y, c, e := Establish(roomURL, pw, isServer)
 				if e == nil {
 					sess.Set(y, c)
 					lis.OnStatus("connected")
@@ -455,35 +323,45 @@ func SocksHandshake(c net.Conn) (string, error) {
 	if _, err := io.ReadFull(c, buf[:4]); err != nil || buf[0] != 0x05 || buf[1] != 0x01 {
 		return "", fmt.Errorf("socks5 connect only")
 	}
-	
+
 	addrType := buf[3]
 	var host string
 	switch addrType {
 	case 0x01: // IPv4
 		b := make([]byte, 4)
-		if _, err := io.ReadFull(c, b); err != nil { return "", err }
+		if _, err := io.ReadFull(c, b); err != nil {
+			return "", err
+		}
 		host = net.IP(b).String()
 	case 0x03: // Domain
 		b := make([]byte, 1)
-		if _, err := io.ReadFull(c, b); err != nil { return "", err }
+		if _, err := io.ReadFull(c, b); err != nil {
+			return "", err
+		}
 		sz := int(b[0])
 		db := make([]byte, sz)
-		if _, err := io.ReadFull(c, db); err != nil { return "", err }
+		if _, err := io.ReadFull(c, db); err != nil {
+			return "", err
+		}
 		host = string(db)
 	case 0x04: // IPv6
 		b := make([]byte, 16)
-		if _, err := io.ReadFull(c, b); err != nil { return "", err }
+		if _, err := io.ReadFull(c, b); err != nil {
+			return "", err
+		}
 		host = net.IP(b).String()
 	default:
 		return "", fmt.Errorf("unsupported addr type %d", addrType)
 	}
-	
+
 	pb := make([]byte, 2)
-	if _, err := io.ReadFull(c, pb); err != nil { return "", err }
+	if _, err := io.ReadFull(c, pb); err != nil {
+		return "", err
+	}
 	port := int(pb[0])<<8 | int(pb[1])
-	
+
 	// Reply success (dummy BND.ADDR)
 	c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-	
+
 	return fmt.Sprintf("%s:%d", host, port), nil
 }
