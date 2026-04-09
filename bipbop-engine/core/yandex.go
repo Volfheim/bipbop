@@ -12,12 +12,19 @@ import (
 
 const apiBase = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"
 
+type ICEServerInfo struct {
+	URLs       []string `json:"urls"`
+	Username   string   `json:"username"`
+	Credential string   `json:"credential"`
+}
+
 type ConnectionInfo struct {
 	RoomID       string `json:"room_id"`
 	PeerID       string `json:"peer_id"`
 	Credentials  string `json:"credentials"`
 	ClientConfig struct {
-		MediaServerURL string `json:"media_server_url"`
+		MediaServerURL string          `json:"media_server_url"`
+		ICEServers     []ICEServerInfo `json:"ice_servers"`
 	} `json:"client_configuration"`
 }
 
@@ -56,9 +63,39 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 		return nil, fmt.Errorf("Yandex API error %d: %s", resp.StatusCode, body)
 	}
 
-	var info ConnectionInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	// Read the full body for both debugging and parsing
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
 		return nil, err
+	}
+
+	// Log raw response for debugging
+	var rawJSON map[string]interface{}
+	json.Unmarshal(bodyBytes, &rawJSON)
+	if cc, ok := rawJSON["client_configuration"].(map[string]interface{}); ok {
+		if iceRaw, ok := cc["ice_servers"]; ok {
+			iceJSON, _ := json.Marshal(iceRaw)
+			getLog().Info(fmt.Sprintf("[API] ICE servers from Yandex: %s", string(iceJSON)))
+		} else {
+			getLog().Warn("[API] No ice_servers in client_configuration!")
+			// Log all keys in client_configuration
+			keys := make([]string, 0)
+			for k := range cc {
+				keys = append(keys, k)
+			}
+			getLog().Info(fmt.Sprintf("[API] client_configuration keys: %v", keys))
+		}
+	}
+
+	var info ConnectionInfo
+	if err := json.Unmarshal(bodyBytes, &info); err != nil {
+		return nil, err
+	}
+
+	getLog().Info(fmt.Sprintf("[API] MediaServerURL: %s", info.ClientConfig.MediaServerURL))
+	getLog().Info(fmt.Sprintf("[API] ICE servers count: %d", len(info.ClientConfig.ICEServers)))
+	for i, s := range info.ClientConfig.ICEServers {
+		getLog().Info(fmt.Sprintf("[API]   ICE[%d]: urls=%v user=%s", i, s.URLs, s.Username))
 	}
 
 	return &info, nil

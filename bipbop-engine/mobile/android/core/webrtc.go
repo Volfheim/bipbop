@@ -43,11 +43,27 @@ func NewWebRTCPeer(roomURL, name string, onData func([]byte)) (*WebRTCPeer, erro
 }
 
 func (p *WebRTCPeer) Connect(ctx context.Context) error {
+	// Build ICE servers from Yandex API response
+	iceServers := []webrtc.ICEServer{
+		{URLs: []string{"stun:stun.rtc.yandex.net:3478"}},
+	}
+
+	// Add TURN servers from Yandex Telemost API
+	for _, s := range p.conn.ClientConfig.ICEServers {
+		iceServers = append(iceServers, webrtc.ICEServer{
+			URLs:           s.URLs,
+			Username:       s.Username,
+			Credential:     s.Credential,
+			CredentialType: webrtc.ICECredentialTypePassword,
+		})
+	}
+
+	getLog().Info(fmt.Sprintf("[RTC] Using %d ICE servers", len(iceServers)))
+
 	config := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.rtc.yandex.net:3478"}},
-		},
-		SDPSemantics: webrtc.SDPSemanticsUnifiedPlan,
+		ICEServers:         iceServers,
+		SDPSemantics:       webrtc.SDPSemanticsUnifiedPlan,
+		ICETransportPolicy: webrtc.ICETransportPolicyRelay, // Force TURN relay to survive DPI
 	}
 
 	settingEngine := webrtc.SettingEngine{}
@@ -85,11 +101,13 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 
 	p.pcSub.OnDataChannel(func(dc *webrtc.DataChannel) {
 		getLog().Info(fmt.Sprintf("[RTC] Received DataChannel: %s", dc.Label()))
-		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-			if p.onData != nil && len(msg.Data) > 0 {
-				p.onData(msg.Data)
-			}
-		})
+		if dc.Label() == "bipbop" {
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				if p.onData != nil && len(msg.Data) > 0 {
+					p.onData(msg.Data)
+				}
+			})
+		}
 	})
 
 	ws, _, err := websocket.DefaultDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
