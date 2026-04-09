@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
+	"golang.org/x/net/proxy"
 )
 
 type WebRTCPeer struct {
@@ -110,7 +112,21 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		}
 	})
 
-	ws, _, err := websocket.DefaultDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
+	// Use upstream proxy for WebSocket if configured
+	wsDialer := websocket.DefaultDialer
+	upstream := GetUpstream()
+	if upstream != "" {
+		getLog().Info(fmt.Sprintf("[RTC] WS via upstream proxy: %s", upstream))
+		proxyDialer, proxyErr := proxy.SOCKS5("tcp", upstream, nil, &net.Dialer{Timeout: 15 * time.Second})
+		if proxyErr == nil {
+			wsDialer = &websocket.Dialer{
+				NetDial:          proxyDialer.Dial,
+				HandshakeTimeout: 30 * time.Second,
+			}
+		}
+	}
+
+	ws, _, err := wsDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
 		return err
 	}

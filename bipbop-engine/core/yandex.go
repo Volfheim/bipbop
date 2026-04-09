@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -55,26 +56,60 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	req.Header.Set("Origin", "https://telemost.yandex.ru")
 	req.Header.Set("Referer", "https://telemost.yandex.ru/")
 
-	// Use upstream proxy if configured
-	client := http.DefaultClient
+	getLog().Info("[API] Resolving cloud-api.yandex.ru...")
+
+	// Custom DNS resolver: try system DNS first, then Yandex DNS (77.88.8.8) as fallback
+	customResolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 5 * time.Second}
+			// Try Yandex DNS which should always be whitelisted
+			return d.DialContext(ctx, "udp", "77.88.8.8:53")
+		},
+	}
+
+	customDialer := &net.Dialer{
+		Timeout:  10 * time.Second,
+		Resolver: customResolver,
+	}
+
+	// Build transport
+	var transport http.RoundTripper
+
 	upstream := GetUpstream()
 	if upstream != "" {
 		getLog().Info(fmt.Sprintf("[API] Using upstream proxy: %s", upstream))
-		dialer, err := proxy.SOCKS5("tcp", upstream, nil, &net.Dialer{Timeout: 10 * time.Second})
-		if err == nil {
-			client = &http.Client{
-				Transport: &http.Transport{
-					Dial: dialer.Dial,
-				},
+		proxyDialer, proxyErr := proxy.SOCKS5("tcp", upstream, nil, customDialer)
+		if proxyErr == nil {
+			transport = &http.Transport{
+				Dial: proxyDialer.Dial,
+			}
+		} else {
+			getLog().Warn(fmt.Sprintf("[API] Upstream proxy error: %v, falling back to direct", proxyErr))
+			transport = &http.Transport{
+				DialContext: customDialer.DialContext,
 			}
 		}
+	} else {
+		transport = &http.Transport{
+			DialContext: customDialer.DialContext,
+		}
 	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   15 * time.Second,
+	}
+
+	getLog().Info("[API] Sending request to Yandex Telemost API...")
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	getLog().Info(fmt.Sprintf("[API] Response status: %d", resp.StatusCode))
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -96,7 +131,6 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 			getLog().Info(fmt.Sprintf("[API] ICE servers from Yandex: %s", string(iceJSON)))
 		} else {
 			getLog().Warn("[API] No ice_servers in client_configuration!")
-			// Log all keys in client_configuration
 			keys := make([]string, 0)
 			for k := range cc {
 				keys = append(keys, k)
