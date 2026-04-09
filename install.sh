@@ -1,119 +1,123 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# VOLFHEIM BIP-BOP SERVER SETUP SCRIPT
+# BIP-BOP SERVER MANAGER — Интерактивное меню управления
 # ==============================================================================
+# Установка: curl -sL https://raw.githubusercontent.com/Volfheim/bipbop/main/install.sh | sudo bash
+# Запуск:    bipbop
 
-# Цвета для вывода
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
 BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m'
 
-# Рабочие директории
 INSTALL_DIR="/usr/local/bin"
 CONF_DIR="/etc/volfheim"
 CONF_FILE="$CONF_DIR/config.env"
-CLIENTS_FILE="$CONF_DIR/clients.txt"
 BIN_NAME="volfheim-server"
 SVC_NAME="volfheim.service"
 GITHUB_REPO="Volfheim/bipbop"
 
 if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}Ошибка: Этот скрипт должен запускаться от имени root (sudo).${NC}" 
+   echo -e "${RED}Запустите от root: sudo bipbop${NC}" 
    exit 1
 fi
 
 # ==============================================================================
-# Вспомогательные функции
+# Баннер
 # ==============================================================================
 print_banner() {
     clear
     echo -e "${CYAN}${BOLD}"
-    echo "  _   _       _  __ _          _           "
-    echo " | | | |     | |/ _| |        (_)          "
-    echo " | | | | ___ | | |_| |__   ___ _ _ __ ___  "
-    echo " | | | |/ _ \| |  _| '_ \ / _ \ | '_ \` _ \ "
-    echo " \ \_/ / (_) | | | | | | |  __/ | | | | | |"
-    echo "  \___/ \___/|_|_| |_| |_|\___|_|_| |_| |_|"
-    echo "                                           "
-    echo "        BIP-BOP Server Manager v1.0         "
-    echo -e "${NC}================================================="
+    echo "  ╔══════════════════════════════════════╗"
+    echo "  ║         ⚡ BIP-BOP v2.0 ⚡           ║"
+    echo "  ║     Telemost DPI Bypass Server       ║"
+    echo "  ╚══════════════════════════════════════╝"
+    echo -e "${NC}"
 }
 
 get_room_url() {
-    if [[ -f "$CONF_FILE" ]]; then
-        source "$CONF_FILE"
-        echo "$VOLFHEIM_ROOM_URL"
+    [[ -f "$CONF_FILE" ]] && source "$CONF_FILE" && echo "$VOLFHEIM_ROOM_URL" || echo ""
+}
+
+get_password() {
+    [[ -f "$CONF_FILE" ]] && source "$CONF_FILE" && echo "$VOLFHEIM_PASSWORD" || echo ""
+}
+
+server_status() {
+    if systemctl is-active --quiet "$SVC_NAME" 2>/dev/null; then
+        echo -e "${GREEN}● Сервер работает${NC}"
     else
-        echo ""
+        echo -e "${RED}○ Сервер остановлен${NC}"
     fi
 }
 
 # ==============================================================================
-# 1. Установка и обновление сервера
+# 1. Установка / Обновление сервера
 # ==============================================================================
 install_server() {
-    echo -e "\n${CYAN}>>> Установка / Обновление Volfheim Server...${NC}"
+    echo -e "\n${CYAN}>>> Установка / Обновление сервера...${NC}"
     mkdir -p "$CONF_DIR"
 
-    # Чтение или создание конфигурации
     local room_url
     room_url=$(get_room_url)
-    local password
 
     if [[ -z "$room_url" ]]; then
-        # Генерация 16-байтного случайного пароля в HEX
+        local password
         password=$(openssl rand -hex 16)
         
-        echo -e "${YELLOW}Для маскировки сервера под звонок Yandex Telemost, вам необходимо создать встречу в Яндексе.${NC}"
-        echo -e "${YELLOW}Перейдите на https://telemost.yandex.ru, нажмите 'Запланировать' и скопируйте Вечную Ссылку.${NC}"
-        read -r -p "Ссылка на Телемост (Room URL): " input_url
-        room_url=${input_url}
+        echo -e "${YELLOW}"
+        echo "  Для маскировки под звонок Яндекс Телемост:"
+        echo "  1. Зайдите на https://telemost.yandex.ru"
+        echo "  2. Нажмите 'Запланировать встречу'"
+        echo "  3. Скопируйте Вечную Ссылку"
+        echo -e "${NC}"
+        read -r -p "  Ссылка на Телемост: " input_url
 
-        if [[ -z "$room_url" || ! "$room_url" == *"telemost.yandex.ru"* ]]; then
-            echo -e "${RED}[✗] Некорректная ссылка. Установка прервана.${NC}"
-            exit 1
+        if [[ -z "$input_url" || ! "$input_url" == *"telemost.yandex.ru"* ]]; then
+            echo -e "${RED}  [✗] Некорректная ссылка.${NC}"
+            read -r -p "  Enter..."
+            return
         fi
 
-        # Сохранение конфига
+        room_url="$input_url"
         echo "VOLFHEIM_PASSWORD=$password" > "$CONF_FILE"
         echo "VOLFHEIM_ROOM_URL=$room_url" >> "$CONF_FILE"
         chmod 600 "$CONF_FILE"
-        echo -e "${GREEN}[+] Конфигурация создана (Комната: $room_url)${NC}"
+        echo -e "${GREEN}  [+] Конфиг создан${NC}"
     else
-        echo -e "${GREEN}[+] Найдена существующая конфигурация (Комната: $room_url)${NC}"
+        echo -e "${GREEN}  [+] Конфиг найден: $room_url${NC}"
     fi
 
-    echo -e "${CYAN}>>> Загрузка последней версии с GitHub...${NC}"
-    # Используем прямую ссылку на бинарник в папке bipbop-server, так как он закоммичен в репозиторий
-    local DOWNLOAD_URL="https://raw.githubusercontent.com/$GITHUB_REPO/main/bipbop-server/volfheim-linux-amd64"
+    echo -e "${CYAN}  Скачивание бинарника...${NC}"
+    local URL="https://raw.githubusercontent.com/$GITHUB_REPO/main/bipbop-server/volfheim-linux-amd64"
+    curl -sL "$URL" -o "/tmp/$BIN_NAME"
     
-    # Скачивание и установка
-    curl -sL "$DOWNLOAD_URL" -o "/tmp/$BIN_NAME"
     if [[ ! -s "/tmp/$BIN_NAME" || $(stat -c%s "/tmp/$BIN_NAME") -lt 100000 ]]; then
-        echo -e "${RED}[✗] Ошибка скачивания файла. Ссылка недоступна или файл поврежден.${NC}"
-        read -r -p "Нажмите Enter для продолжения..."
+        echo -e "${RED}  [✗] Ошибка загрузки. Проверьте сеть.${NC}"
+        read -r -p "  Enter..."
         return
     fi
 
     mv -f "/tmp/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
     chmod +x "$INSTALL_DIR/$BIN_NAME"
 
-    echo -e "${CYAN}>>> Настройка службы SystemD...${NC}"
+    # Создаём systemd-сервис
     cat <<EOF > /etc/systemd/system/$SVC_NAME
 [Unit]
-Description=Volfheim Custom VPN Core
+Description=Bip-Bop Telemost DPI Bypass Server
 After=network.target
 
 [Service]
 Type=simple
 User=root
-# Лимит файлов для высоконагруженных сокетов
 LimitNOFILE=51200
 EnvironmentFile=$CONF_FILE
-ExecStart=$INSTALL_DIR/$BIN_NAME server --listen \${VOLFHEIM_ROOM_URL} --password \${VOLFHEIM_PASSWORD}
+ExecStart=$INSTALL_DIR/$BIN_NAME server --listen \${VOLFHEIM_ROOM_URL} --password \${VOLFHEIM_PASSWORD} --data $CONF_DIR
 Restart=always
 RestartSec=5
 
@@ -122,100 +126,173 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    
-    # Жесткая остановка старых и новых служб для освобождения порта
     systemctl stop "$SVC_NAME" 2>/dev/null || true
-    systemctl stop lionheart.service 2>/dev/null || true
-    systemctl disable lionheart.service 2>/dev/null || true
-    pkill -9 -f "lionheart" 2>/dev/null || true
-    pkill -9 -f "volfheim-server" 2>/dev/null || true
-    sleep 2
+    pkill -9 -f "$BIN_NAME" 2>/dev/null || true
+    sleep 1
 
     systemctl enable "$SVC_NAME"
     systemctl start "$SVC_NAME"
-
-    # Проверка статуса
     sleep 2
+
     if systemctl is-active --quiet "$SVC_NAME"; then
-        echo -e "${GREEN}[+] Успешно! Сервер запущен и добавлен в автозагрузку.${NC}"
-        echo -e "Теперь вы можете добавить клиентов через меню."
+        echo -e "${GREEN}  [+] Сервер запущен и в автозагрузке!${NC}"
     else
-        echo -e "${RED}[✗] Сервер не запустился. Проверьте логи: journalctl -u $SVC_NAME -n 20${NC}"
+        echo -e "${RED}  [✗] Ошибка запуска. Логи: journalctl -u $SVC_NAME -n 20${NC}"
     fi
 
-    read -r -p "Нажмите Enter для продолжения..."
+    # Создаём симлинк bipbop → install.sh
+    if [[ ! -f "$INSTALL_DIR/bipbop" ]]; then
+        local SCRIPT_PATH
+        SCRIPT_PATH=$(readlink -f "$0")
+        cp "$SCRIPT_PATH" "$INSTALL_DIR/bipbop" 2>/dev/null || true
+        chmod +x "$INSTALL_DIR/bipbop" 2>/dev/null || true
+        echo -e "${GREEN}  [+] Команда 'bipbop' установлена${NC}"
+    fi
+
+    read -r -p "  Enter..."
 }
 
 # ==============================================================================
-# 2. Добавление клиента
+# 2. Добавить клиента
 # ==============================================================================
 add_client() {
     if [[ ! -f "$INSTALL_DIR/$BIN_NAME" || ! -f "$CONF_FILE" ]]; then
-        echo -e "${RED}Сервер еще не установлен! Сначала выполните Установку (Опция 1).${NC}"
-        read -r -p "Нажмите Enter для возврата..."
-        return
-    fi
-    
-    echo -e "\n${CYAN}>>> Создание нового клиента${NC}"
-    read -r -p "Введите имя клиента (например: Phone-Oleg): " client_name
-    
-    if [[ -z "$client_name" ]]; then
-        echo -e "${RED}Имя не может быть пустым.${NC}"
-        read -r -p "Нажмите Enter для продолжения..."
+        echo -e "${RED}  Сервер не установлен! Выберите пункт 1.${NC}"
+        read -r -p "  Enter..."
         return
     fi
 
-    # Генерация ключа через сам сервер
-    local password
-    password=$(grep VOLFHEIM_PASSWORD "$CONF_FILE" | cut -d '=' -f 2)
+    echo -e "\n${CYAN}>>> Добавление нового клиента${NC}\n"
+    read -r -p "  Имя клиента: " client_name
+    
+    if [[ -z "$client_name" ]]; then
+        echo -e "${RED}  Имя не может быть пустым.${NC}"
+        read -r -p "  Enter..."
+        return
+    fi
+
     local room_url
     room_url=$(get_room_url)
-    
-    echo -e "Генерация ключа для ${YELLOW}$client_name${NC}..."
-    
-    # Формат BipBop (Yandex Telemost): base64_url("RoomURL|password")
-    local raw_data="$room_url|$password"
-    # Формируем URL-safe Base64 без паддинга
-    local smart_key
-    smart_key=$(echo -n "$raw_data" | base64 | tr '+/' '-_' | tr -d '=' | tr -d '\n')
-    
-    # Сохраняем в список
-    local date_str
-    date_str=$(date '+%Y-%m-%d %H:%M')
-    echo "[$date_str] $client_name : $smart_key" >> "$CLIENTS_FILE"
-    
-    echo -e "\n${GREEN}[+] Клиент '${client_name}' успешно создан!${NC}"
-    echo -e "Ваш Smart-Key:"
-    echo -e "──────────────────────────────────────────────────────────"
-    echo -e "${YELLOW}$smart_key${NC}"
-    echo -e "──────────────────────────────────────────────────────────"
-    echo -e "Используйте этот ключ в приложении BipBop Android."
-    
-    read -r -p "Нажмите Enter для продолжения..."
+
+    "$INSTALL_DIR/$BIN_NAME" client add --name "$client_name" --listen "$room_url" --data "$CONF_DIR"
+
+    echo ""
+    read -r -p "  Enter..."
 }
 
 # ==============================================================================
 # 3. Список клиентов
 # ==============================================================================
 list_clients() {
-    echo -e "\n${CYAN}>>> Список зарегистрированных клиентов${NC}"
+    echo -e "\n${CYAN}>>> Клиенты${NC}"
     
-    if [[ ! -f "$CLIENTS_FILE" ]]; then
-        echo -e "${YELLOW}База клиентов пока пуста. Вы еще никого не добавили.${NC}"
-    else
-        echo -e "──────────────────────────────────────────────────────────"
-        cat "$CLIENTS_FILE"
-        echo -e "──────────────────────────────────────────────────────────"
+    if [[ ! -f "$INSTALL_DIR/$BIN_NAME" ]]; then
+        echo -e "${RED}  Сервер не установлен.${NC}"
+        read -r -p "  Enter..."
+        return
     fi
-    
-    read -r -p "Нажмите Enter для продолжения..."
+
+    "$INSTALL_DIR/$BIN_NAME" client list --data "$CONF_DIR"
+
+    echo ""
+    read -r -p "  Enter..."
 }
 
 # ==============================================================================
-# 4. Удаление сервера
+# 4. Отозвать клиента
 # ==============================================================================
-uninstall_server() {
-    echo -e "\n${RED}ВЫ УВЕРЕНЫ, ЧТО ХОТИТЕ УДАЛИТЬ СЕРВЕР И ВСЕ КЛЮЧИ? (y/n)${NC}"
+revoke_client() {
+    if [[ ! -f "$INSTALL_DIR/$BIN_NAME" ]]; then
+        echo -e "${RED}  Сервер не установлен.${NC}"
+        read -r -p "  Enter..."
+        return
+    fi
+
+    echo -e "\n${CYAN}>>> Отзыв клиента${NC}\n"
+    
+    # Показать список
+    "$INSTALL_DIR/$BIN_NAME" client list --data "$CONF_DIR"
+    
+    echo ""
+    read -r -p "  ID клиента для отзыва: " cid
+    
+    if [[ -z "$cid" ]]; then
+        echo -e "${RED}  ID не указан.${NC}"
+        read -r -p "  Enter..."
+        return
+    fi
+
+    "$INSTALL_DIR/$BIN_NAME" client revoke --id "$cid" --data "$CONF_DIR"
+
+    echo ""
+    read -r -p "  Enter..."
+}
+
+# ==============================================================================
+# 5. Удалить клиента
+# ==============================================================================
+delete_client() {
+    if [[ ! -f "$INSTALL_DIR/$BIN_NAME" ]]; then
+        echo -e "${RED}  Сервер не установлен.${NC}"
+        read -r -p "  Enter..."
+        return
+    fi
+
+    echo -e "\n${CYAN}>>> Удаление клиента${NC}\n"
+    
+    "$INSTALL_DIR/$BIN_NAME" client list --data "$CONF_DIR"
+    
+    echo ""
+    read -r -p "  ID клиента для удаления: " cid
+    
+    if [[ -z "$cid" ]]; then
+        echo -e "${RED}  ID не указан.${NC}"
+        read -r -p "  Enter..."
+        return
+    fi
+
+    echo -e "${RED}  Удалить клиента $cid навсегда? (y/n)${NC}"
+    read -r confirm
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        "$INSTALL_DIR/$BIN_NAME" client delete --id "$cid" --data "$CONF_DIR"
+    else
+        echo -e "${YELLOW}  Отменено.${NC}"
+    fi
+
+    echo ""
+    read -r -p "  Enter..."
+}
+
+# ==============================================================================
+# 6. Логи сервера
+# ==============================================================================
+show_logs() {
+    echo -e "\n${CYAN}>>> Последние 30 строк логов (Ctrl+C для выхода)${NC}\n"
+    journalctl -u "$SVC_NAME" -n 30 --no-pager
+    echo ""
+    read -r -p "  Enter..."
+}
+
+# ==============================================================================
+# 7. Перезапуск сервера
+# ==============================================================================
+restart_server() {
+    echo -e "\n${CYAN}>>> Перезапуск сервера...${NC}"
+    systemctl restart "$SVC_NAME"
+    sleep 2
+    if systemctl is-active --quiet "$SVC_NAME"; then
+        echo -e "${GREEN}  [+] Сервер перезапущен!${NC}"
+    else
+        echo -e "${RED}  [✗] Ошибка. journalctl -u $SVC_NAME -n 20${NC}"
+    fi
+    read -r -p "  Enter..."
+}
+
+# ==============================================================================
+# 8. Удаление всего
+# ==============================================================================
+uninstall_all() {
+    echo -e "\n${RED}${BOLD}  ⚠ УДАЛИТЬ СЕРВЕР И ВСЕ КЛЮЧИ? (y/n)${NC}"
     read -r confirm
     if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
         systemctl stop "$SVC_NAME" 2>/dev/null
@@ -223,33 +300,48 @@ uninstall_server() {
         rm -f "/etc/systemd/system/$SVC_NAME"
         systemctl daemon-reload
         rm -f "$INSTALL_DIR/$BIN_NAME"
+        rm -f "$INSTALL_DIR/bipbop"
         rm -rf "$CONF_DIR"
-        echo -e "${GREEN}[+] Сервер и клиентские данные успешно удалены.${NC}"
+        echo -e "${GREEN}  [+] Всё удалено.${NC}"
     else
-        echo -e "${YELLOW}Удаление отменено.${NC}"
+        echo -e "${YELLOW}  Отменено.${NC}"
     fi
-    read -r -p "Нажмите Enter для продолжения..."
+    read -r -p "  Enter..."
 }
 
 # ==============================================================================
-# Основной цикл меню
+# Главное меню
 # ==============================================================================
 while true; do
     print_banner
-    echo -e " 1) Установить / Обновить сервер"
-    echo -e " 2) Добавить нового клиента (Сгенерировать ключ)"
-    echo -e " 3) Показать всех клиентов"
-    echo -e " 4) Удалить VPN сервер"
-    echo -e " 0) Выход"
-    echo -e ""
-    read -r -p "Выберите действие [0-4]: " choice
+    echo -e "  $(server_status)"
+    echo ""
+    echo -e "  ${BOLD}Сервер${NC}"
+    echo -e "  ${GREEN}1)${NC} Установить / Обновить"
+    echo -e "  ${GREEN}2)${NC} Перезапустить"
+    echo -e "  ${GREEN}3)${NC} Логи"
+    echo ""
+    echo -e "  ${BOLD}Клиенты${NC}"
+    echo -e "  ${CYAN}4)${NC} Добавить клиента"
+    echo -e "  ${CYAN}5)${NC} Список клиентов"
+    echo -e "  ${YELLOW}6)${NC} Отозвать ключ"
+    echo -e "  ${RED}7)${NC} Удалить клиента"
+    echo ""
+    echo -e "  ${DIM}8) Удалить всё${NC}"
+    echo -e "  ${DIM}0) Выход${NC}"
+    echo ""
+    read -r -p "  > " choice
 
     case $choice in
         1) install_server ;;
-        2) add_client ;;
-        3) list_clients ;;
-        4) uninstall_server ;;
-        0) echo -e "${GREEN}До свидания!${NC}"; exit 0 ;;
-        *) echo -e "${RED}Неверный ввод!${NC}"; sleep 1 ;;
+        2) restart_server ;;
+        3) show_logs ;;
+        4) add_client ;;
+        5) list_clients ;;
+        6) revoke_client ;;
+        7) delete_client ;;
+        8) uninstall_all ;;
+        0) echo -e "\n${GREEN}  До встречи!${NC}\n"; exit 0 ;;
+        *) echo -e "${RED}  ?${NC}"; sleep 0.5 ;;
     esac
 done
