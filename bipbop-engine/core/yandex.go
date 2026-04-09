@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,20 +57,8 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 
 	getLog().Info("[API] Resolving cloud-api.yandex.ru...")
 
-	// Custom DNS resolver: try system DNS first, then Yandex DNS (77.88.8.8) as fallback
-	customResolver := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 5 * time.Second}
-			// Try Yandex DNS which should always be whitelisted
-			return d.DialContext(ctx, "udp", "77.88.8.8:53")
-		},
-	}
-
-	customDialer := &net.Dialer{
-		Timeout:  10 * time.Second,
-		Resolver: customResolver,
-	}
+	// Use system DNS (ISP DNS works under DPI whitelists)
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
 
 	// Build transport
 	var transport http.RoundTripper
@@ -79,7 +66,7 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	upstream := GetUpstream()
 	if upstream != "" {
 		getLog().Info(fmt.Sprintf("[API] Using upstream proxy: %s", upstream))
-		proxyDialer, proxyErr := proxy.SOCKS5("tcp", upstream, nil, customDialer)
+		proxyDialer, proxyErr := proxy.SOCKS5("tcp", upstream, nil, dialer)
 		if proxyErr == nil {
 			transport = &http.Transport{
 				Dial: proxyDialer.Dial,
@@ -87,12 +74,12 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 		} else {
 			getLog().Warn(fmt.Sprintf("[API] Upstream proxy error: %v, falling back to direct", proxyErr))
 			transport = &http.Transport{
-				DialContext: customDialer.DialContext,
+				DialContext: dialer.DialContext,
 			}
 		}
 	} else {
 		transport = &http.Transport{
-			DialContext: customDialer.DialContext,
+			DialContext: dialer.DialContext,
 		}
 	}
 
