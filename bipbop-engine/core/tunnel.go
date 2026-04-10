@@ -59,7 +59,8 @@ var (
 	mu            sync.Mutex
 	Log Logger         = nopLogger{}
 	Lis StatusListener = nopStatus{}
-	UpstreamProxy string // SOCKS5 proxy for outbound connections (e.g. "127.0.0.1:10808")
+	UpstreamProxy string // SOCKS5 proxy for outbound connections
+	SocketProtector func(fd int) error // Android callback to bypass VPN
 )
 
 func SetLogger(l Logger)           { mu.Lock(); Log = l; mu.Unlock() }

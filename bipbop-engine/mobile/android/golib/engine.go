@@ -60,20 +60,7 @@ func (e *vpnEngine) run() error {
 		}
 	}()
 
-	// 3. First Establish — BEFORE tun2socks, so signaling traffic
-	// goes directly without being captured by our own VPN tunnel.
-	logToApp("info", "[ENG] Establishing tunnel...")
-	ym, cl, err := core.Establish(e.peer, e.pw, false)
-	if err != nil {
-		logToApp("error", fmt.Sprintf("[ENG] Initial establish failed: %v", err))
-		emit("error")
-		return err
-	}
-	e.sess.Set(ym, cl)
-	emit("connected")
-	logToApp("info", "[ENG] Tunnel established!")
-
-	// 4. Start tun2socks AFTER tunnel is up (VPN Slot mode)
+	// 3. Start tun2socks first (VPN Slot mode)
 	if e.tunFd != -1 {
 		t2s, err := newTun2Socks(e.tunFd, socksAddr, e.mtu, e.dns)
 		if err != nil {
@@ -85,22 +72,12 @@ func (e *vpnEngine) run() error {
 		logToApp("info", "[ENG] Обычный SOCKS5 режим (без захвата VPN-слота)")
 	}
 
-	// 5. Main Reconnect Loop
+	// 4. Main Reconnect Loop
 	for {
-		// Wait for failure or stop
 		select {
 		case <-e.ctx.Done():
 			return nil
-		case <-e.sess.Wait():
-			logToApp("warn", "[ENG] Connection lost - redialing...")
-			emit("reconnecting")
-		}
-
-		// Reconnect
-		select {
-		case <-e.ctx.Done():
-			return nil
-		case <-time.After(3 * time.Second):
+		default:
 		}
 
 		logToApp("info", "[ENG] Establishing tunnel...")
@@ -119,6 +96,16 @@ func (e *vpnEngine) run() error {
 		e.sess.Set(ym, cl)
 		emit("connected")
 		logToApp("info", "[ENG] Tunnel established!")
+
+		// 5. Wait for failure or stop - BUT DON'T CLOSE T2S
+		select {
+		case <-e.ctx.Done():
+			return nil
+		case <-e.sess.Wait():
+			logToApp("warn", "[ENG] Connection lost - redialing...")
+			emit("reconnecting")
+			// loop continues to Establish, keeping T2S alive!
+		}
 	}
 }
 

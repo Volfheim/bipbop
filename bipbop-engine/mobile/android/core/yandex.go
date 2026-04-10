@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -60,10 +61,21 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	// Build HTTP client
 	var client *http.Client
 
+	// Custom dialer that protects sockets on Android
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				if SocketProtector != nil {
+					SocketProtector(int(fd))
+				}
+			})
+		},
+	}
+
 	upstream := GetUpstream()
 	if upstream != "" {
 		getLog().Info(fmt.Sprintf("[API] Using upstream proxy: %s", upstream))
-		dialer := &net.Dialer{Timeout: 10 * time.Second}
 		proxyDialer, proxyErr := proxy.SOCKS5("tcp", upstream, nil, dialer)
 		if proxyErr == nil {
 			client = &http.Client{
@@ -72,13 +84,18 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 			}
 		} else {
 			getLog().Warn(fmt.Sprintf("[API] Upstream proxy error: %v, falling back to direct", proxyErr))
-			client = &http.Client{Timeout: 15 * time.Second}
+			client = &http.Client{
+				Transport: &http.Transport{Dial: dialer.Dial},
+				Timeout:   15 * time.Second,
+			}
 		}
 	} else {
-		// Use default transport — on Android it uses cgo DNS (getaddrinfo)
-		// which correctly resolves via ISP DNS under DPI whitelists.
-		// Creating a custom Transport breaks this by switching to pure-Go DNS.
-		client = &http.Client{Timeout: 15 * time.Second}
+		// On Android we MUST use a custom transport if we want to call VpnService.protect().
+		// However, we must be careful with DNS. Use the protected dialer.
+		client = &http.Client{
+			Transport: &http.Transport{DialContext: dialer.DialContext},
+			Timeout:   15 * time.Second,
+		}
 	}
 
 	getLog().Info("[API] Sending request to Yandex Telemost API...")

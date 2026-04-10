@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -112,23 +113,41 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		}
 	})
 
-	// Use upstream proxy for WebSocket if configured
-	wsDialer := websocket.DefaultDialer
+	// 1. Create a protected base dialer
+	baseDialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				if SocketProtector != nil {
+					SocketProtector(int(fd))
+				}
+			})
+		},
+	}
+
+	// 2. Prepare WebSocket dialer
+	wsDialer := &websocket.Dialer{
+		HandshakeTimeout: 15 * time.Second,
+		NetDialContext:   baseDialer.DialContext,
+	}
+
+	// 3. Apply upstream proxy if configured
 	upstream := GetUpstream()
 	if upstream != "" {
 		getLog().Info(fmt.Sprintf("[RTC] WS via upstream proxy: %s", upstream))
-		proxyDialer, proxyErr := proxy.SOCKS5("tcp", upstream, nil, &net.Dialer{Timeout: 15 * time.Second})
+		proxyDialer, proxyErr := proxy.SOCKS5("tcp", upstream, nil, baseDialer)
 		if proxyErr == nil {
-			wsDialer = &websocket.Dialer{
-				NetDial:          proxyDialer.Dial,
-				HandshakeTimeout: 30 * time.Second,
+			wsDialer.NetDialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return proxyDialer.Dial(network, addr)
 			}
+		} else {
+			getLog().Warn(fmt.Sprintf("[RTC] Upstream proxy dialer error: %v", proxyErr))
 		}
 	}
 
 	ws, _, err := wsDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("ws dial: %v", err)
 	}
 	p.ws = ws
 
