@@ -14,13 +14,6 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-// Пул IP-адресов для goloom.strm.yandex.net
-var mediaIPs = []string{
-	"87.250.254.244",
-	"87.250.250.12",
-	"213.180.204.244",
-}
-
 type WebRTCPeer struct {
 	roomURL         string
 	name            string
@@ -111,37 +104,22 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		})
 	})
 
-	// Отказоустойчивый диалер для WebSocket (Multi-IP Fallback)
+	// Применяем FragDialer для WebSocket-соединения с Медиа-сервером
+	fd := &FragDialer{
+		Dialer: net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		},
+	}
+
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
-		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, _ := net.SplitHostPort(addr)
-			d := net.Dialer{Timeout: 5 * time.Second}
-
-			// 1. Пытаемся стандартно
-			conn, err := d.DialContext(ctx, "tcp4", addr)
-			if err == nil {
-				return conn, nil
-			}
-
-			// 2. Резервный пул IP для Медиа-сервера
-			if host == "goloom.strm.yandex.net" {
-				getLog().Warn(fmt.Sprintf("[RTC] DNS failed for %s, trying fallback IPs...", host))
-				for _, ip := range mediaIPs {
-					conn, err = d.DialContext(ctx, "tcp4", net.JoinHostPort(ip, port))
-					if err == nil {
-						getLog().Info(fmt.Sprintf("[RTC] Connected to Media via IP: %s", ip))
-						return conn, nil
-					}
-				}
-			}
-			return nil, err
-		},
+		NetDialContext:   fd.DialContext,
 	}
 
 	ws, _, err := dialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("media ws dial error (DPI block?): %w", err)
 	}
 	p.ws = ws
 

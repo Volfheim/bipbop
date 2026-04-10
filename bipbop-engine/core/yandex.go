@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,15 +13,6 @@ import (
 )
 
 const apiBase = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"
-
-// Пул IP-адресов для cloud-api.yandex.ru для обхода блокировок DNS (lookup timeout)
-var apiIPs = []string{
-	"213.180.204.127",
-	"213.180.193.127",
-	"77.88.21.127",
-	"87.250.250.127",
-	"5.255.255.127",
-}
 
 type ConnectionInfo struct {
 	RoomID       string `json:"room_id"`
@@ -56,40 +46,28 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	req.Header.Set("Origin", "https://telemost.yandex.ru")
 	req.Header.Set("Referer", "https://telemost.yandex.ru/")
 
-	// Кастомный клиент с отказоустойчивым диалером (Multi-IP Fallback)
+	// Используем FragDialer для обхода SNI-блокировок
+	fd := &FragDialer{
+		Dialer: net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		},
+	}
+
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				host, port, _ := net.SplitHostPort(addr)
-				d := net.Dialer{Timeout: 5 * time.Second}
-
-				// 1. Пытаемся через системный DNS
-				conn, err := d.DialContext(ctx, "tcp4", addr)
-				if err == nil {
-					return conn, nil
-				}
-
-				// 2. Если DNS подвел (timeout), пробуем наш пул IP
-				if host == "cloud-api.yandex.ru" {
-					getLog().Warn(fmt.Sprintf("[API] DNS lookup failed for %s, trying fallback IPs...", host))
-					for _, ip := range apiIPs {
-						conn, err = d.DialContext(ctx, "tcp4", net.JoinHostPort(ip, port))
-						if err == nil {
-							getLog().Info(fmt.Sprintf("[API] Connected via fallback IP: %s", ip))
-							return conn, nil
-						}
-					}
-				}
-				return nil, err
-			},
-			ForceAttemptHTTP2: false, // Иногда DPI блокирует H2 охотнее, чем H1.1
+			DialContext: fd.DialContext,
+			// DoH-like поведение: если обычный резолв упадет, Go попробует Dial заново.
+			// В FragDialer мы можем добавить DoH логику позже, если обычный Dial будет виснуть на lookup.
 		},
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		// Если Client.Timeout exceeded, значит даже фрагментация на этом IP не помогла,
+		// либо DNS всё еще лежит. 
+		return nil, fmt.Errorf("Yandex API unreachable (DPI/DNS block): %w", err)
 	}
 	defer resp.Body.Close()
 
