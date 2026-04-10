@@ -22,7 +22,6 @@ class BipBopVpnService : VpnService() {
     private external fun startVpnNative(smartKey: String, tunFd: Int, mtu: Int, dns: String): Int
     private external fun reconnectVpnNative()
     private external fun stopVpnNative()
-    private external fun setUpstreamProxyNative(addr: String)
 
     private lateinit var connectivityManager: android.net.ConnectivityManager
 
@@ -71,11 +70,7 @@ class BipBopVpnService : VpnService() {
             ACTION_CONNECT -> {
                 val smartKey = intent.getStringExtra("EXTRA_SMART_KEY")
                 val proxyOnly = intent.getBooleanExtra("EXTRA_PROXY_ONLY", false)
-                val upstreamProxy = intent.getStringExtra("EXTRA_UPSTREAM_PROXY") ?: ""
                 if (smartKey != null) {
-                    if (upstreamProxy.isNotEmpty()) {
-                        setUpstreamProxyNative(upstreamProxy)
-                    }
                     establishVpn(smartKey, proxyOnly)
                 } else {
                     broadcastState("error")

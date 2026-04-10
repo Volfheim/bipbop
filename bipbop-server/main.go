@@ -17,7 +17,6 @@ func main() {
 
 	rootCmd.AddCommand(cli.NewServerCmd())
 	rootCmd.AddCommand(cli.NewGenerateCmd())
-	rootCmd.AddCommand(cli.NewClientCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
