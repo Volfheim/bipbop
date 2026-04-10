@@ -1,60 +1,15 @@
 package core
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/google/uuid"
 )
 
-var (
-	// Stable Yandex API IPs to try if DNS fails
-	yandexAPIFallbacks = []string{
-		"213.180.204.127",
-		"87.250.250.244",
-		"77.88.21.127",
-	}
-
-	// Custom resolver that bypasses system DNS
-	antiJammerResolver = &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{
-				Timeout: time.Second * 5,
-			}
-			// Force Yandex DNS via UDP to bypass system DNS tampering
-			return d.DialContext(ctx, "udp", "77.88.8.8:53")
-		},
-	}
-
-	antiJammerClient = &http.Client{
-		Timeout: time.Second * 15,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				host, port, _ := net.SplitHostPort(addr)
-				if host == "cloud-api.yandex.ru" || host == "api.cloud.yandex.net" {
-					// Try our custom resolver first
-					ips, err := antiJammerResolver.LookupHost(ctx, host)
-					if err == nil && len(ips) > 0 {
-						addr = net.JoinHostPort(ips[0], port)
-					} else {
-						// DNS Failed or timed out (Jammer!) -> Try fallbacks
-						getLog().Warn(fmt.Sprintf("[API] DNS Lookup failed for %s: %v. Using fallbacks.", host, err))
-						addr = net.JoinHostPort(yandexAPIFallbacks[0], port)
-					}
-				}
-				d := net.Dialer{Timeout: 10 * time.Second}
-				return d.DialContext(ctx, network, addr)
-			},
-		},
-	}
-)
 
 const apiBase = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"
 
@@ -98,28 +53,9 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	req.Header.Set("Origin", "https://telemost.yandex.ru")
 	req.Header.Set("Referer", "https://telemost.yandex.ru/")
 
-	resp, err := antiJammerClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		// Second chance: try next fallback IP directly in the URL if the first one failed
-		getLog().Error(fmt.Sprintf("[API] First attempt failed: %v. Trying hardcoded fallback IP...", err))
-		
-		furl := fmt.Sprintf("https://%s/telemost_front/v2/telemost/conferences/%s/connection", 
-			yandexAPIFallbacks[1], url.QueryEscape(roomURL))
-		req2, _ := http.NewRequest("GET", furl, nil)
-		req2.URL.RawQuery = q.Encode()
-		req2.Host = "cloud-api.yandex.ru" // Critical for SNI and routing
-		
-		// Copy headers
-		for k, vv := range req.Header {
-			for _, v := range vv {
-				req2.Header.Add(k, v)
-			}
-		}
-
-		resp, err = antiJammerClient.Do(req2)
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 	defer resp.Body.Close()
 

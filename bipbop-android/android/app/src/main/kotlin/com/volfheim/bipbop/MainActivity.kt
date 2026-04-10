@@ -16,6 +16,7 @@ class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.volfheim.bipbop/vpn"
     private var methodChannel: MethodChannel? = null
     private var pendingKey: String? = null
+    private var pendingProxyOnly: Boolean = false
     private val REQ_VPN_PREPARE = 0x1
 
     private val vpnReceiver = object : BroadcastReceiver() {
@@ -54,8 +55,13 @@ class MainActivity: FlutterActivity() {
             when (call.method) {
                 "startVpn" -> {
                     val key = call.argument<String>("smartKey")
+                    val proxyOnly = call.argument<Boolean>("proxyOnly") ?: false
                     if (key != null) {
-                        tryPrepareAndStartVpn(key)
+                        if (proxyOnly) {
+                            startServiceWithKey(key, true)
+                        } else {
+                            tryPrepareAndStartVpn(key, false)
+                        }
                         result.success(true)
                     } else {
                         result.error("INVALID_KEY", "Key is null", null)
@@ -70,14 +76,15 @@ class MainActivity: FlutterActivity() {
         }
     }
 
-    private fun tryPrepareAndStartVpn(key: String) {
+    private fun tryPrepareAndStartVpn(key: String, proxyOnly: Boolean) {
         val intent = VpnService.prepare(this)
         if (intent != null) {
             pendingKey = key
+            pendingProxyOnly = proxyOnly
             startActivityForResult(intent, REQ_VPN_PREPARE)
             methodChannel?.invokeMethod("onLog", "Запрос системных прав на VPN...")
         } else {
-            startServiceWithKey(key)
+            startServiceWithKey(key, proxyOnly)
         }
     }
 
@@ -85,8 +92,9 @@ class MainActivity: FlutterActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_VPN_PREPARE && resultCode == Activity.RESULT_OK) {
             pendingKey?.let {
-                startServiceWithKey(it)
+                startServiceWithKey(it, pendingProxyOnly)
                 pendingKey = null
+                pendingProxyOnly = false
             }
         } else if (requestCode == REQ_VPN_PREPARE) {
             methodChannel?.invokeMethod("onStateChanged", "error")
@@ -94,10 +102,11 @@ class MainActivity: FlutterActivity() {
         }
     }
 
-    private fun startServiceWithKey(key: String) {
+    private fun startServiceWithKey(key: String, proxyOnly: Boolean) {
         val serviceIntent = Intent(this, BipBopVpnService::class.java).apply {
             action = BipBopVpnService.ACTION_CONNECT
             putExtra("EXTRA_SMART_KEY", key)
+            putExtra("EXTRA_PROXY_ONLY", proxyOnly)
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
