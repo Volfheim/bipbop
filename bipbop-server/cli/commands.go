@@ -87,8 +87,8 @@ func runServer(cmd *cobra.Command, args []string) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(info)
 		})
-		fmt.Printf("[INFO] Signaling Proxy running on :8080\n")
-		http.ListenAndServe(":8080", nil)
+		fmt.Printf("[INFO] Signaling Proxy running on :80\n")
+		http.ListenAndServe(":80", nil)
 	}()
 
 	key := core.EncodeSmartKey(listenAddr, password, "")

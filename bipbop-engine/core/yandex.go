@@ -98,14 +98,18 @@ func getRemoteConfig(roomURL, displayName string) (*ConnectionInfo, error) {
 	q.Add("waiting_room_supported", "true")
 	req.URL.RawQuery = q.Encode()
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0")
 	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Client-Instance-Id", uuid.New().String())
-	req.Header.Set("X-Telemost-Client-Version", "190.1.0")
+	req.Header.Set("X-Telemost-Client-Version", "187.1.0")
 	req.Header.Set("Idempotency-Key", uuid.New().String())
 	req.Header.Set("Origin", "https://telemost.yandex.ru")
 	req.Header.Set("Referer", "https://telemost.yandex.ru/")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "same-site")
 
 	resp, err := antiJammerClient.Do(req)
 	if err != nil {
@@ -157,7 +161,7 @@ func getRemoteConfig(roomURL, displayName string) (*ConnectionInfo, error) {
 }
 
 func getProxyConfig(proxyIP, roomURL, displayName string) (*ConnectionInfo, error) {
-	u := fmt.Sprintf("http://%s:8080/config?url=%s", proxyIP, url.QueryEscape(roomURL))
+	u := fmt.Sprintf("http://%s:80/config?url=%s", proxyIP, url.QueryEscape(roomURL))
 	resp, err := http.Get(u)
 	if err != nil {
 		return nil, fmt.Errorf("vps proxy error: %w", err)

@@ -81,10 +81,18 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+    echo -e "${CYAN}>>> Настройка файрвола (открытие порта 80)...${NC}"
+    if command -v ufw >/dev/null; then
+        ufw allow 80/tcp >/dev/null
+    fi
+    if command -v iptables >/dev/null; then
+        iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null
+    fi
+
     systemctl daemon-reload
     systemctl enable --now "$SVC_NAME"
     systemctl restart "$SVC_NAME"
-    echo -e "${GREEN}[+] Сервер запущен.${NC}"
+    echo -e "${GREEN}[+] Сервер запущен на порту 80.${NC}"
     read -r -p "Enter..."
 }
 
