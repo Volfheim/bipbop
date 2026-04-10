@@ -60,8 +60,22 @@ func (e *vpnEngine) run() error {
 		}
 	}()
 
-	// 3. Start tun2socks only if tunFd != -1 (VPN Slot mode)
+	// 3. First-time Establishment (SIGNALLING PHASE)
+	// We MUST do this BEFORE starting tun2socks to avoid DNS deadlock.
+	logToApp("info", "[ENG] Establishing initial tunnel...")
+	ym, cl, err := core.Establish(e.peer, e.pw, false)
+	if err != nil {
+		logToApp("error", fmt.Sprintf("[ENG] Initial establish failed: %v", err))
+		emit("error")
+		return err
+	}
+	e.sess.Set(ym, cl)
+	emit("connected")
+	logToApp("info", "[ENG] Initial tunnel established!")
+
+	// 4. Start tun2socks only AFTER tunnel is ready
 	if e.tunFd != -1 {
+		logToApp("info", "[ENG] Starting tun2socks...")
 		t2s, err := newTun2Socks(e.tunFd, socksAddr, e.mtu, e.dns)
 		if err != nil {
 			emit("error")
@@ -72,39 +86,32 @@ func (e *vpnEngine) run() error {
 		logToApp("info", "[ENG] Обычный SOCKS5 режим (без захвата VPN-слота)")
 	}
 
-	// 4. Main Reconnect Loop
+	// 5. Main Reconnect Loop
 	for {
-		select {
-		case <-e.ctx.Done():
-			return nil
-		default:
-		}
-
-		logToApp("info", "[ENG] Establishing tunnel...")
-		ym, cl, err := core.Establish(e.peer, e.pw, false)
-		if err != nil {
-			logToApp("error", fmt.Sprintf("[ENG] Establish failed: %v", err))
-			emit("reconnecting")
-			select {
-			case <-e.ctx.Done():
-				return nil
-			case <-time.After(5 * time.Second):
-				continue
-			}
-		}
-
-		e.sess.Set(ym, cl)
-		emit("connected")
-		logToApp("info", "[ENG] Tunnel established!")
-
-		// 5. Wait for failure or stop - BUT DON'T CLOSE T2S
 		select {
 		case <-e.ctx.Done():
 			return nil
 		case <-e.sess.Wait():
 			logToApp("warn", "[ENG] Connection lost - redialing...")
 			emit("reconnecting")
-			// loop continues to Establish, keeping T2S alive!
+
+			// Redial logic
+			for {
+				ym, cl, err := core.Establish(e.peer, e.pw, false)
+				if err != nil {
+					logToApp("error", fmt.Sprintf("[ENG] Redial failed: %v, retrying...", err))
+					select {
+					case <-e.ctx.Done():
+						return nil
+					case <-time.After(5 * time.Second):
+						continue
+					}
+				}
+				e.sess.Set(ym, cl)
+				emit("connected")
+				logToApp("info", "[ENG] Re-established!")
+				break
+			}
 		}
 	}
 }

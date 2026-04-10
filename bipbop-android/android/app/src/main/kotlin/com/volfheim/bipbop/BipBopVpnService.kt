@@ -93,7 +93,7 @@ class BipBopVpnService : VpnService() {
                 broadcastState("connected")
                 Log.i(TAG, "Starting native Go core in Proxy-Only mode (fd = -1)")
                 runCatching {
-                    val result = startVpnNative(smartKey, -1, 1200, "1.1.1.1")
+                    val result = startVpnNative(smartKey, -1, 1200, "77.88.8.8")
                     if (result != 0) {
                         Log.e(TAG, "Native core failed: $result")
                         shutdown()
@@ -142,7 +142,7 @@ class BipBopVpnService : VpnService() {
                 
                 Log.i(TAG, "Starting native Go core with fd=$fd")
                 runCatching {
-                    val result = startVpnNative(smartKey, fd, 1200, "1.1.1.1")
+                    val result = startVpnNative(smartKey, fd, 1200, "77.88.8.8")
                     if (result != 0) {
                         Log.e(TAG, "Native core failed to start: $result")
                         shutdown()
