@@ -4,14 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/net/proxy"
 )
 
 const apiBase = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"
@@ -58,45 +55,9 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 
 	getLog().Info("[API] Resolving cloud-api.yandex.ru...")
 
-	// Build HTTP client
-	var client *http.Client
-
-	// Custom dialer that protects sockets on Android
-	dialer := &net.Dialer{
-		Timeout: 10 * time.Second,
-		Control: func(network, address string, c syscall.RawConn) error {
-			return c.Control(func(fd uintptr) {
-				if SocketProtector != nil {
-					SocketProtector(int(fd))
-				}
-			})
-		},
-	}
-
-	upstream := GetUpstream()
-	if upstream != "" {
-		getLog().Info(fmt.Sprintf("[API] Using upstream proxy: %s", upstream))
-		proxyDialer, proxyErr := proxy.SOCKS5("tcp", upstream, nil, dialer)
-		if proxyErr == nil {
-			client = &http.Client{
-				Transport: &http.Transport{Dial: proxyDialer.Dial},
-				Timeout:   15 * time.Second,
-			}
-		} else {
-			getLog().Warn(fmt.Sprintf("[API] Upstream proxy error: %v, falling back to direct", proxyErr))
-			client = &http.Client{
-				Transport: &http.Transport{Dial: dialer.Dial},
-				Timeout:   15 * time.Second,
-			}
-		}
-	} else {
-		// On Android we MUST use a custom transport if we want to call VpnService.protect().
-		// However, we must be careful with DNS. Use the protected dialer.
-		client = &http.Client{
-			Transport: &http.Transport{DialContext: dialer.DialContext},
-			Timeout:   15 * time.Second,
-		}
-	}
+	// Use default transport — on Android it uses cgo DNS (getaddrinfo)
+	// which correctly resolves via ISP DNS under DPI whitelists.
+	client := &http.Client{Timeout: 15 * time.Second}
 
 	getLog().Info("[API] Sending request to Yandex Telemost API...")
 
@@ -126,13 +87,6 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 		if iceRaw, ok := cc["ice_servers"]; ok {
 			iceJSON, _ := json.Marshal(iceRaw)
 			getLog().Info(fmt.Sprintf("[API] ICE servers from Yandex: %s", string(iceJSON)))
-		} else {
-			getLog().Warn("[API] No ice_servers in client_configuration!")
-			keys := make([]string, 0)
-			for k := range cc {
-				keys = append(keys, k)
-			}
-			getLog().Info(fmt.Sprintf("[API] client_configuration keys: %v", keys))
 		}
 	}
 
@@ -142,10 +96,5 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	}
 
 	getLog().Info(fmt.Sprintf("[API] MediaServerURL: %s", info.ClientConfig.MediaServerURL))
-	getLog().Info(fmt.Sprintf("[API] ICE servers count: %d", len(info.ClientConfig.ICEServers)))
-	for i, s := range info.ClientConfig.ICEServers {
-		getLog().Info(fmt.Sprintf("[API]   ICE[%d]: urls=%v user=%s", i, s.URLs, s.Username))
-	}
-
 	return &info, nil
 }

@@ -56,17 +56,13 @@ func (nopStatus) OnStats(int64, int64) {}
 // --- globals set by the host ---
 
 var (
-	mu            sync.Mutex
+	mu  sync.Mutex
 	Log Logger         = nopLogger{}
 	Lis StatusListener = nopStatus{}
-	UpstreamProxy string // SOCKS5 proxy for outbound connections
-	SocketProtector func(fd int) error // Android callback to bypass VPN
 )
 
 func SetLogger(l Logger)           { mu.Lock(); Log = l; mu.Unlock() }
 func SetListener(l StatusListener) { mu.Lock(); Lis = l; mu.Unlock() }
-func SetUpstream(addr string)      { mu.Lock(); UpstreamProxy = addr; mu.Unlock() }
-func GetUpstream() string          { mu.Lock(); defer mu.Unlock(); return UpstreamProxy }
 
 func getLog() Logger         { mu.Lock(); defer mu.Unlock(); return Log }
 func getLis() StatusListener { mu.Lock(); defer mu.Unlock(); return Lis }

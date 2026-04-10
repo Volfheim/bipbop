@@ -69,10 +69,7 @@ func SetListener(l EventListener) {
 }
 
 func SetUpstreamProxy(addr string) {
-	core.SetUpstream(addr)
-	if addr != "" {
-		logToApp("info", fmt.Sprintf("[LIB] Upstream proxy set: %s", addr))
-	}
+	// Reversion: Upstream proxy support removed to restore 21:54 stability
 }
 
 func Start(smartKey string, tunFd int, mtu int, dns string) error {
