@@ -81,18 +81,10 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-    echo -e "${CYAN}>>> Настройка файрвола (открытие порта 80)...${NC}"
-    if command -v ufw >/dev/null; then
-        ufw allow 80/tcp >/dev/null
-    fi
-    if command -v iptables >/dev/null; then
-        iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null
-    fi
-
     systemctl daemon-reload
     systemctl enable --now "$SVC_NAME"
     systemctl restart "$SVC_NAME"
-    echo -e "${GREEN}[+] Сервер запущен на порту 80.${NC}"
+    echo -e "${GREEN}[+] Сервер запущен.${NC}"
     read -r -p "Enter..."
 }
 
@@ -103,9 +95,8 @@ add_client() {
 
     password=$(grep VOLFHEIM_PASSWORD "$CONF_FILE" | cut -d '=' -f 2)
     room_url=$(get_room_url)
-    vps_ip=$(curl -s https://api.ipify.org)
     
-    raw_data="$room_url|$password|$vps_ip"
+    raw_data="$room_url|$password"
     smart_key=$(echo -n "$raw_data" | base64 | tr '+/' '-_' | tr -d '=' | tr -d '\n')
 
     echo "[$client_name] : $smart_key" >> "$CLIENTS_FILE"

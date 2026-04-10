@@ -16,7 +16,6 @@ type vpnEngine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	peer   string
-	vpsIP  string
 	tunFd  int
 	mtu    int
 	dns    string

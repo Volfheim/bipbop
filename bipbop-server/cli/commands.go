@@ -4,10 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
 	"github.com/armon/go-socks5"
@@ -47,18 +44,7 @@ func NewGenerateCmd() *cobra.Command {
 				room = "https://telemost.yandex.ru/j/1234567890" // Пример
 			}
 
-			// Пытаемся автоматически определить публичный IP сервера
-			vpsIP := "YOUR_VPS_IP"
-			resp, err := http.Get("https://api.ipify.org")
-			if err == nil {
-				defer resp.Body.Close()
-				ipBytes, _ := io.ReadAll(resp.Body)
-				if len(ipBytes) > 0 {
-					vpsIP = string(ipBytes)
-				}
-			}
-
-			key := core.EncodeSmartKey(room, password, vpsIP)
+			key := core.EncodeSmartKey(room, password)
 			fmt.Printf("\n\033[33m┌─── SMART KEY ───────────────────────────────────────────────┐\033[0m\n")
 			fmt.Printf("\033[33m│\033[0m \033[32m%s\033[0m\n", key)
 			fmt.Printf("\033[33m└─────────────────────────────────────────────────────────────┘\033[0m\n\n")
@@ -72,26 +58,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	sess := &core.Session{}
 	rch := make(chan struct{}, 1)
 
-	// --- Signaling Proxy ---
-	go func() {
-		http.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
-			room := r.URL.Query().Get("url")
-			if room == "" {
-				room = listenAddr
-			}
-			info, err := core.GetConnectionInfo(room, "VolfheimServer")
-			if err != nil {
-				http.Error(w, err.Error(), 500)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(info)
-		})
-		fmt.Printf("[INFO] Signaling Proxy running on :80\n")
-		http.ListenAndServe(":80", nil)
-	}()
-
-	key := core.EncodeSmartKey(listenAddr, password, "")
+	key := core.EncodeSmartKey(listenAddr, password)
 
 	ym, cl, err := core.Establish(nil, key, "Server", true)
 	if err == nil {
