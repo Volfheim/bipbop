@@ -89,7 +89,7 @@ func (s *DCStream) Write(b []byte) (n int, err error) {
 			return 0, errors.New("datachannel not allocated")
 		}
 
-		err := s.peer.dc.Send(b[i:end])
+		err := s.peer.Send(b[i:end])
 		if err != nil {
 			return i, err
 		}

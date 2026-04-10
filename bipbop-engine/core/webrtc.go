@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,13 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 )
+
+// Пул IP-адресов для goloom.strm.yandex.net
+var mediaIPs = []string{
+	"87.250.254.244",
+	"87.250.250.12",
+	"213.180.204.244",
+}
 
 type WebRTCPeer struct {
 	roomURL         string
@@ -69,8 +77,6 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		return err
 	}
 
-	// olcrtc uses "olcrtc" label. We adapt to it or keep our own, but the logic 
-	// must match. User wants "exactly as author's", so we use "olcrtc".
 	p.dc, err = p.pcPub.CreateDataChannel("olcrtc", nil)
 	if err != nil {
 		return err
@@ -105,8 +111,35 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		})
 	})
 
-	// Use DefaultDialer as olcrtc does. No custom dialers/hardcoded IPs.
-	ws, _, err := websocket.DefaultDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
+	// Отказоустойчивый диалер для WebSocket (Multi-IP Fallback)
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, _ := net.SplitHostPort(addr)
+			d := net.Dialer{Timeout: 5 * time.Second}
+
+			// 1. Пытаемся стандартно
+			conn, err := d.DialContext(ctx, "tcp4", addr)
+			if err == nil {
+				return conn, nil
+			}
+
+			// 2. Резервный пул IP для Медиа-сервера
+			if host == "goloom.strm.yandex.net" {
+				getLog().Warn(fmt.Sprintf("[RTC] DNS failed for %s, trying fallback IPs...", host))
+				for _, ip := range mediaIPs {
+					conn, err = d.DialContext(ctx, "tcp4", net.JoinHostPort(ip, port))
+					if err == nil {
+						getLog().Info(fmt.Sprintf("[RTC] Connected to Media via IP: %s", ip))
+						return conn, nil
+					}
+				}
+			}
+			return nil, err
+		},
+	}
+
+	ws, _, err := dialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
 		return err
 	}
@@ -139,7 +172,7 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	select {
 	case <-dcReady:
 		return nil
-	case <-time.After(20 * time.Second):
+	case <-time.After(30 * time.Second):
 		return fmt.Errorf("datachannel timeout")
 	case <-ctx.Done():
 		return ctx.Err()
