@@ -33,7 +33,8 @@ print_banner() {
     echo " \ \_/ / (_) | | | | | | |  __/ | | | | | |"
     echo "  \___/ \___/|_|_| |_| |_|\___|_|_| |_| |_|"
     echo "                                           "
-    echo "        BIP-BOP Server Manager v1.0         "
+    echo "        BIP-BOP Server Manager v2.0         "
+    echo -e "${YELLOW}        Version: 2.0-PURE${NC}"
     echo -e "${NC}================================================="
 }
 
@@ -61,6 +62,7 @@ install_server() {
     fi
 
     echo -e "${CYAN}>>> Загрузка бинарника...${NC}"
+    rm -f "$INSTALL_DIR/$BIN_NAME"
     curl -sL "https://raw.githubusercontent.com/$GITHUB_REPO/main/bipbop-server/volfheim-linux-amd64" -o "$INSTALL_DIR/$BIN_NAME"
     chmod +x "$INSTALL_DIR/$BIN_NAME"
 
@@ -108,10 +110,13 @@ add_client() {
 list_clients() {
     echo -e "\n${CYAN}>>> Список клиентов:${NC}"
     if [[ -f "$CLIENTS_FILE" ]]; then
-        cat "$CLIENTS_FILE" | column -t -s ':'
+        echo -e "${YELLOW}Имя | Ключ${NC}"
+        echo "-------------------------------------------------"
+        cat "$CLIENTS_FILE"
     else
         echo "Клиентов пока нет."
     fi
+    echo "-------------------------------------------------"
     read -r -p "Enter..."
 }
 
@@ -156,7 +161,7 @@ while true; do
     read -r -p "Выбор: " choice
     case $choice in
         1) install_server ;;
-        2) systemctl status "$SVC_NAME" ;;
+        2) systemctl status "$SVC_NAME"; echo; read -r -p "Нажмите Enter для возврата в меню..." ;;
         3) add_client ;;
         4) list_clients ;;
         5) delete_client ;;
