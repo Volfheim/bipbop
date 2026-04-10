@@ -16,7 +16,7 @@ type vpnEngine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	peer   string
-	pw     string
+	vpsIP  string
 	tunFd  int
 	mtu    int
 	dns    string
@@ -63,7 +63,7 @@ func (e *vpnEngine) run() error {
 	// 3. First-time Establishment (SIGNALLING PHASE)
 	// We MUST do this BEFORE starting tun2socks to avoid DNS deadlock on cold start.
 	logToApp("info", "[ENG] Establishing initial tunnel...")
-	ym, cl, err := core.Establish(e.peer, e.pw, false)
+	ym, cl, err := core.Establish(nil, e.peer, "Guest", false)
 	if err != nil {
 		logToApp("error", fmt.Sprintf("[ENG] Initial establish failed: %v", err))
 		emit("error")
@@ -96,7 +96,7 @@ func (e *vpnEngine) run() error {
 
 			// Redial logic
 			for {
-				ym, cl, err := core.Establish(e.peer, e.pw, false)
+				ym, cl, err := core.Establish(nil, e.peer, "Guest", false)
 				if err != nil {
 					logToApp("error", fmt.Sprintf("[ENG] Redial failed: %v, retrying...", err))
 					select {

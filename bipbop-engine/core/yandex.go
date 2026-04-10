@@ -128,17 +128,17 @@ func getRemoteConfig(roomURL, displayName string) (*ConnectionInfo, error) {
 	var rawJSON map[string]interface{}
 	json.Unmarshal(bodyBytes, &rawJSON)
 	if cc, ok := rawJSON["client_configuration"].(map[string]interface{}); ok {
-		if iceRaw, ok := cc["ice_servers"]; ok {
+		iceRaw, iceOk := cc["ice_servers"]
+		if iceOk {
 			iceJSON, _ := json.Marshal(iceRaw)
 			getLog().Info(fmt.Sprintf("[API] ICE servers from Yandex: %s", string(iceJSON)))
 		} else {
 			getLog().Warn("[API] No ice_servers in client_configuration!")
-			// Log all keys in client_configuration
-			keys := make([]string, 0)
-			for k := range cc {
-				keys = append(keys, k)
-			}
-			getLog().Info(fmt.Sprintf("[API] client_configuration keys: %v", keys))
+		}
+
+		// Log other interesting fields for debugging
+		if ms, ok := cc["media_server_url"].(string); ok {
+			getLog().Info(fmt.Sprintf("[API] Raw MediaServerURL: %s", ms))
 		}
 	}
 

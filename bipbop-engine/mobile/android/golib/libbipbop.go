@@ -83,13 +83,12 @@ func Start(smartKey string, tunFd int, mtu int, dns string) error {
 	e := &vpnEngine{
 		ctx:    ctx,
 		cancel: cancel,
-		peer:   peer,
-		pw:     pw,
+		peer:   smartKey, // Store FULL key for core.Establish
 		vpsIP:  vpsIP,
 		tunFd:  tunFd,
 		mtu:    mtu,
 		dns:    dns,
-		dnsSem: make(chan struct{}, 200), // Limit concurrent DNS
+		dnsSem: make(chan struct{}, 200),
 	}
 	vpnEng = e
 	runDone = make(chan struct{})
