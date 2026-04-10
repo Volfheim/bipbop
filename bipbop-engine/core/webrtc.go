@@ -3,9 +3,9 @@ package core
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,24 +13,21 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-var (
-	// IP for goloom.strm.yandex.net
-	yandexMediaIP = "87.250.254.244"
-)
-
-
 type WebRTCPeer struct {
-	roomURL     string
-	name        string
-	conn        *ConnectionInfo
-	ws          *websocket.Conn
-	wsMu        sync.Mutex
-	pcSub       *webrtc.PeerConnection
-	pcPub       *webrtc.PeerConnection
-	dc          *webrtc.DataChannel
-	onData      func([]byte)
-	closeCh     chan struct{}
-	keepAliveCh chan struct{}
+	roomURL         string
+	name            string
+	conn            *ConnectionInfo
+	ws              *websocket.Conn
+	wsMu            sync.Mutex
+	pcSub           *webrtc.PeerConnection
+	pcPub           *webrtc.PeerConnection
+	dc              *webrtc.DataChannel
+	onData          func([]byte)
+	closeCh         chan struct{}
+	keepAliveCh     chan struct{}
+	sendQueue       chan []byte
+	sendQueueClosed atomic.Bool
+	wg              sync.WaitGroup
 }
 
 func NewWebRTCPeer(roomURL, name string, onData func([]byte)) (*WebRTCPeer, error) {
@@ -46,31 +43,16 @@ func NewWebRTCPeer(roomURL, name string, onData func([]byte)) (*WebRTCPeer, erro
 		onData:      onData,
 		closeCh:     make(chan struct{}),
 		keepAliveCh: make(chan struct{}),
+		sendQueue:   make(chan []byte, 5000),
 	}, nil
 }
 
 func (p *WebRTCPeer) Connect(ctx context.Context) error {
-	// Build ICE servers from Yandex API response
-	iceServers := []webrtc.ICEServer{
-		{URLs: []string{"stun:stun.rtc.yandex.net:3478"}},
-	}
-
-	// Add TURN servers from Yandex Telemost API
-	for _, s := range p.conn.ClientConfig.ICEServers {
-		iceServers = append(iceServers, webrtc.ICEServer{
-			URLs:           s.URLs,
-			Username:       s.Username,
-			Credential:     s.Credential,
-			CredentialType: webrtc.ICECredentialTypePassword,
-		})
-	}
-
-	getLog().Info(fmt.Sprintf("[RTC] Using %d ICE servers", len(iceServers)))
-
 	config := webrtc.Configuration{
-		ICEServers:         iceServers,
-		SDPSemantics:       webrtc.SDPSemanticsUnifiedPlan,
-		ICETransportPolicy: webrtc.ICETransportPolicyAll,
+		ICEServers: []webrtc.ICEServer{
+			{URLs: []string{"stun:stun.rtc.yandex.net:3478"}},
+		},
+		SDPSemantics: webrtc.SDPSemanticsUnifiedPlan,
 	}
 
 	settingEngine := webrtc.SettingEngine{}
@@ -87,16 +69,24 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		return err
 	}
 
-	opts := &webrtc.DataChannelInit{
-		Ordered: func(b bool) *bool { return &b }(true),
-	}
-	p.dc, err = p.pcPub.CreateDataChannel("bipbop", opts)
+	// olcrtc uses "olcrtc" label. We adapt to it or keep our own, but the logic 
+	// must match. User wants "exactly as author's", so we use "olcrtc".
+	p.dc, err = p.pcPub.CreateDataChannel("olcrtc", nil)
 	if err != nil {
 		return err
 	}
 
 	dcReady := make(chan struct{})
 	p.dc.OnOpen(func() {
+		getLog().Info("[RTC] DataChannel opened")
+		numWorkers := 4
+		for i := 0; i < numWorkers; i++ {
+			p.wg.Add(1)
+			go func(id int) {
+				defer p.wg.Done()
+				p.processSendQueue(id)
+			}(i)
+		}
 		close(dcReady)
 	})
 
@@ -108,77 +98,67 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 
 	p.pcSub.OnDataChannel(func(dc *webrtc.DataChannel) {
 		getLog().Info(fmt.Sprintf("[RTC] Received DataChannel: %s", dc.Label()))
-		if dc.Label() == "bipbop" {
-			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-				if p.onData != nil && len(msg.Data) > 0 {
-					p.onData(msg.Data)
-				}
-			})
-		}
+		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+			if p.onData != nil && len(msg.Data) > 0 {
+				p.onData(msg.Data)
+			}
+		})
 	})
 
-	// Hybrid Dialer: Try DNS, then fallback to IP for Media Server
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, _ := net.SplitHostPort(addr)
-			d := net.Dialer{Timeout: 5 * time.Second}
-			// 1. Try DNS
-			conn, err := d.DialContext(ctx, network, addr)
-			if err == nil {
-				return conn, nil
-			}
-			// 2. Fallback to harcoded IP for goloom.strm.yandex.net
-			if host == "goloom.strm.yandex.net" {
-				getLog().Warn(fmt.Sprintf("[RTC] DNS failed for MediaServer. Using fallback IP: %s", yandexMediaIP))
-				return d.DialContext(ctx, network, net.JoinHostPort(yandexMediaIP, port))
-			}
-			return nil, err
-		},
-	}
-
-	ws, _, err := dialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
+	// Use DefaultDialer as olcrtc does. No custom dialers/hardcoded IPs.
+	ws, _, err := websocket.DefaultDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
-		return fmt.Errorf("failed to dial media server: %v", err)
+		return err
 	}
 	p.ws = ws
-
-	// Create dummy audio track to look like a real call (anti-DPI pattern protection)
-	if _, err := p.pcPub.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio); err != nil {
-		getLog().Warn(fmt.Sprintf("[RTC] Failed to add dummy audio track: %v", err))
-	}
 
 	ws.SetPongHandler(func(string) error {
 		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
 	})
-
 	ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 
-	go p.keepAlive()
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.keepAlive()
+	}()
 
 	if err := p.sendHello(); err != nil {
 		return err
 	}
 
 	p.setupICEHandlers()
-	go p.handleSignaling()
+
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.handleSignaling()
+	}()
 
 	select {
 	case <-dcReady:
 		return nil
-	case <-time.After(30 * time.Second):
-		return fmt.Errorf("datachannel connection timeout")
+	case <-time.After(20 * time.Second):
+		return fmt.Errorf("datachannel timeout")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
 func (p *WebRTCPeer) Send(data []byte) error {
-	if p.dc == nil {
+	if p.dc == nil || p.dc.ReadyState() != webrtc.DataChannelStateOpen {
 		return fmt.Errorf("datachannel not ready")
 	}
-	return p.dc.Send(data)
+	if p.sendQueueClosed.Load() {
+		return fmt.Errorf("send queue closed")
+	}
+	select {
+	case p.sendQueue <- data:
+		return nil
+	case <-time.After(50 * time.Millisecond):
+		return fmt.Errorf("send queue timeout")
+	}
 }
 
 func (p *WebRTCPeer) sendHello() error {
@@ -213,14 +193,13 @@ func (p *WebRTCPeer) sendHello() error {
 			"sdkInfo": map[string]interface{}{
 				"implementation": "go",
 				"version":        "1.0.0",
-				"userAgent":      "BipBopVPN-" + p.name,
+				"userAgent":      "OlcRTC-" + p.name,
 			},
 			"sdkInitializationId": uuid.New().String(),
 			"disablePublisher":    false,
 			"disableSubscriber":   false,
 		},
 	}
-
 	p.wsMu.Lock()
 	defer p.wsMu.Unlock()
 	return p.ws.WriteJSON(hello)
@@ -228,22 +207,18 @@ func (p *WebRTCPeer) sendHello() error {
 
 func (p *WebRTCPeer) handleSignaling() {
 	pubSent := false
-
 	for {
 		var msg map[string]interface{}
 		if err := p.ws.ReadJSON(&msg); err != nil {
-			getLog().Warn(fmt.Sprintf("[RTC] WS read error: %v", err))
 			return
 		}
-
-		uid, _ := msg["uid"].(string)
-
-		// Extend deadline on every received message
 		p.wsMu.Lock()
 		if p.ws != nil {
 			p.ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 		}
 		p.wsMu.Unlock()
+
+		uid, _ := msg["uid"].(string)
 
 		if _, ok := msg["serverHello"]; ok {
 			p.sendAck(uid)
@@ -267,40 +242,38 @@ func (p *WebRTCPeer) handleSignaling() {
 			sdp, _ := offer["sdp"].(string)
 			pcSeq, _ := offer["pcSeq"].(float64)
 
-			if err := p.pcSub.SetRemoteDescription(webrtc.SessionDescription{
+			p.pcSub.SetRemoteDescription(webrtc.SessionDescription{
 				Type: webrtc.SDPTypeOffer,
 				SDP:  sdp,
-			}); err == nil {
-				if answer, err := p.pcSub.CreateAnswer(nil); err == nil {
-					p.pcSub.SetLocalDescription(answer)
-					p.wsMu.Lock()
-					p.ws.WriteJSON(map[string]interface{}{
-						"uid": uuid.New().String(),
-						"subscriberSdpAnswer": map[string]interface{}{
-							"pcSeq": int(pcSeq),
-							"sdp":   answer.SDP,
-						},
-					})
-					p.wsMu.Unlock()
-				}
-			}
+			})
+			answer, _ := p.pcSub.CreateAnswer(nil)
+			p.pcSub.SetLocalDescription(answer)
+
+			p.wsMu.Lock()
+			p.ws.WriteJSON(map[string]interface{}{
+				"uid": uuid.New().String(),
+				"subscriberSdpAnswer": map[string]interface{}{
+					"pcSeq": int(pcSeq),
+					"sdp":   answer.SDP,
+				},
+			})
+			p.wsMu.Unlock()
 			p.sendAck(uid)
 
 			time.Sleep(300 * time.Millisecond)
 
-			if pubOffer, err := p.pcPub.CreateOffer(nil); err == nil {
-				p.pcPub.SetLocalDescription(pubOffer)
-				p.wsMu.Lock()
-				p.ws.WriteJSON(map[string]interface{}{
-					"uid": uuid.New().String(),
-					"publisherSdpOffer": map[string]interface{}{
-						"pcSeq": 1,
-						"sdp":   pubOffer.SDP,
-					},
-				})
-				p.wsMu.Unlock()
-				pubSent = true
-			}
+			pubOffer, _ := p.pcPub.CreateOffer(nil)
+			p.pcPub.SetLocalDescription(pubOffer)
+			p.wsMu.Lock()
+			p.ws.WriteJSON(map[string]interface{}{
+				"uid": uuid.New().String(),
+				"publisherSdpOffer": map[string]interface{}{
+					"pcSeq": 1,
+					"sdp":   pubOffer.SDP,
+				},
+			})
+			p.wsMu.Unlock()
+			pubSent = true
 		}
 
 		if answer, ok := msg["publisherSdpAnswer"].(map[string]interface{}); ok {
@@ -313,25 +286,31 @@ func (p *WebRTCPeer) handleSignaling() {
 		}
 
 		if cand, ok := msg["webrtcIceCandidate"].(map[string]interface{}); ok {
-			candStr, _ := cand["candidate"].(string)
-			target, _ := cand["target"].(string)
-			sdpMid, _ := cand["sdpMid"].(string)
-			sdpMLineIndex, _ := cand["sdpMlineIndex"].(float64)
-
-			parts := strings.Fields(candStr)
-			if len(parts) >= 8 {
-				init := webrtc.ICECandidateInit{
-					Candidate:     candStr,
-					SDPMid:        &sdpMid,
-					SDPMLineIndex: func() *uint16 { v := uint16(sdpMLineIndex); return &v }(),
-				}
-				if target == "SUBSCRIBER" {
-					p.pcSub.AddICECandidate(init)
-				} else if target == "PUBLISHER" {
-					p.pcPub.AddICECandidate(init)
-				}
-			}
+			p.handleICE(cand)
 		}
+	}
+}
+
+func (p *WebRTCPeer) handleICE(cand map[string]interface{}) {
+	candStr, _ := cand["candidate"].(string)
+	target, _ := cand["target"].(string)
+	sdpMid, _ := cand["sdpMid"].(string)
+	sdpMLineIndex, _ := cand["sdpMlineIndex"].(float64)
+
+	if !strings.Contains(candStr, "candidate") {
+		return
+	}
+
+	init := webrtc.ICECandidateInit{
+		Candidate:     candStr,
+		SDPMid:        &sdpMid,
+		SDPMLineIndex: func() *uint16 { v := uint16(sdpMLineIndex); return &v }(),
+	}
+
+	if target == "SUBSCRIBER" {
+		p.pcSub.AddICECandidate(init)
+	} else if target == "PUBLISHER" {
+		p.pcPub.AddICECandidate(init)
 	}
 }
 
@@ -394,8 +373,9 @@ func (p *WebRTCPeer) setupICEHandlers() {
 }
 
 func (p *WebRTCPeer) Close() error {
+	p.sendQueueClosed.Store(true)
 	select {
-	case <-p.closeCh: // already closed
+	case <-p.closeCh:
 	default:
 		close(p.closeCh)
 	}
@@ -434,8 +414,24 @@ func (p *WebRTCPeer) keepAlive() {
 				})
 			}
 			p.wsMu.Unlock()
-		case <-p.keepAliveCh:
+		case <-p.closeCh:
 			return
+		}
+	}
+}
+
+func (p *WebRTCPeer) processSendQueue(workerID int) {
+	for {
+		select {
+		case data := <-p.sendQueue:
+			if p.dc == nil || p.dc.ReadyState() != webrtc.DataChannelStateOpen {
+				continue
+			}
+			// Wait if buffer is too large
+			for p.dc.BufferedAmount() > 4*1024*1024 {
+				time.Sleep(10 * time.Millisecond)
+			}
+			p.dc.Send(data)
 		case <-p.closeCh:
 			return
 		}
