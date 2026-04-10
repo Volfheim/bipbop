@@ -108,6 +108,7 @@ class BipBopVpnService : VpnService() {
             val builder = Builder()
                 .setMtu(1280)
                 .addAddress("10.0.0.2", 24)
+                .addDnsServer("77.88.8.8")
                 .setSession("bip-bop VPN")
 
             val publicRoutes = arrayOf(

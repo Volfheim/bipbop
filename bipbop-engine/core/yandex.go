@@ -1,13 +1,44 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/google/uuid"
+)
+
+var (
+	// Stable Yandex API IP for fallback
+	yandexStableIP = "213.180.204.127"
+
+	antiJammerClient = &http.Client{
+		Timeout: time.Second * 15,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, port, _ := net.SplitHostPort(addr)
+				if host == "cloud-api.yandex.ru" || host == "api.disk.yandex.net" {
+					// 1. Try normal dial first (5s timeout for DNS)
+					dialer := net.Dialer{Timeout: 5 * time.Second}
+					conn, err := dialer.DialContext(ctx, network, addr)
+					if err == nil {
+						return conn, nil
+					}
+					
+					// 2. DNS Failed or Blocked -> Try harcoded IP
+					getLog().Warn(fmt.Sprintf("[API] DNS Lookup failed for %s. Using hardcoded IP fallback: %s", host, yandexStableIP))
+					return dialer.DialContext(ctx, network, net.JoinHostPort(yandexStableIP, port))
+				}
+				d := net.Dialer{Timeout: 10 * time.Second}
+				return d.DialContext(ctx, network, addr)
+			},
+		},
+	}
 )
 
 
@@ -53,8 +84,9 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	req.Header.Set("Origin", "https://telemost.yandex.ru")
 	req.Header.Set("Referer", "https://telemost.yandex.ru/")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := antiJammerClient.Do(req)
 	if err != nil {
+		getLog().Error(fmt.Sprintf("[API] Yandex API call failed: %v", err))
 		return nil, err
 	}
 	defer resp.Body.Close()
