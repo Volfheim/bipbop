@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,12 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 )
+
+var (
+	// IP for goloom.strm.yandex.net
+	yandexMediaIP = "87.250.254.244"
+)
+
 
 type WebRTCPeer struct {
 	roomURL     string
@@ -110,11 +117,36 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		}
 	})
 
-	ws, _, err := websocket.DefaultDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
+	// Hybrid Dialer: Try DNS, then fallback to IP for Media Server
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, _ := net.SplitHostPort(addr)
+			d := net.Dialer{Timeout: 5 * time.Second}
+			// 1. Try DNS
+			conn, err := d.DialContext(ctx, network, addr)
+			if err == nil {
+				return conn, nil
+			}
+			// 2. Fallback to harcoded IP for goloom.strm.yandex.net
+			if host == "goloom.strm.yandex.net" {
+				getLog().Warn(fmt.Sprintf("[RTC] DNS failed for MediaServer. Using fallback IP: %s", yandexMediaIP))
+				return d.DialContext(ctx, network, net.JoinHostPort(yandexMediaIP, port))
+			}
+			return nil, err
+		},
+	}
+
+	ws, _, err := dialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to dial media server: %v", err)
 	}
 	p.ws = ws
+
+	// Create dummy audio track to look like a real call (anti-DPI pattern protection)
+	if _, err := p.pcPub.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio); err != nil {
+		getLog().Warn(fmt.Sprintf("[RTC] Failed to add dummy audio track: %v", err))
+	}
 
 	ws.SetPongHandler(func(string) error {
 		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
