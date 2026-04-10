@@ -74,7 +74,7 @@ func Start(smartKey string, tunFd int, mtu int, dns string) error {
 		mu.Unlock()
 		return fmt.Errorf("already running")
 	}
-	peer, pw, err := core.ParseSmartKey(smartKey)
+	peer, pw, vpsIP, err := core.ParseSmartKey(smartKey)
 	if err != nil {
 		mu.Unlock()
 		return err
@@ -85,6 +85,7 @@ func Start(smartKey string, tunFd int, mtu int, dns string) error {
 		cancel: cancel,
 		peer:   peer,
 		pw:     pw,
+		vpsIP:  vpsIP,
 		tunFd:  tunFd,
 		mtu:    mtu,
 		dns:    dns,
