@@ -69,9 +69,8 @@ class BipBopVpnService : VpnService() {
         when (action) {
             ACTION_CONNECT -> {
                 val smartKey = intent.getStringExtra("EXTRA_SMART_KEY")
-                val proxyOnly = intent.getBooleanExtra("EXTRA_PROXY_ONLY", false)
                 if (smartKey != null) {
-                    establishVpn(smartKey, proxyOnly)
+                    establishVpn(smartKey)
                 } else {
                     broadcastState("error")
                     stopSelf()
@@ -84,26 +83,9 @@ class BipBopVpnService : VpnService() {
         return START_STICKY
     }
 
-    private fun establishVpn(smartKey: String, proxyOnly: Boolean) {
+    private fun establishVpn(smartKey: String) {
         vpnScope.launch {
             broadcastState("connecting")
-            
-            if (proxyOnly) {
-                updateNotification("Включен SOCKS5 прокси")
-                broadcastState("connected")
-                Log.i(TAG, "Starting native Go core in Proxy-Only mode (fd = -1)")
-                runCatching {
-                    val result = startVpnNative(smartKey, -1, 1200, "77.88.8.8")
-                    if (result != 0) {
-                        Log.e(TAG, "Native core failed: $result")
-                        shutdown()
-                    }
-                }.onFailure { e ->
-                    Log.e(TAG, "JNI Error: ${e.message}")
-                    shutdown()
-                }
-                return@launch
-            }
 
             val builder = Builder()
                 .setMtu(1280)

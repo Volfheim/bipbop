@@ -40,7 +40,6 @@ class _VPNScreenState extends State<VPNScreen> with SingleTickerProviderStateMix
   final TextEditingController _keyController = TextEditingController();
   VPNState _vpnState = VPNState.disconnected;
   String _statusMessage = 'Нажмите для подключения';
-  bool _proxyOnly = false;
   late AnimationController _pulseController;
   final List<String> _logs = [];
   final ScrollController _logScrollController = ScrollController();
@@ -164,7 +163,6 @@ class _VPNScreenState extends State<VPNScreen> with SingleTickerProviderStateMix
       try {
         await platform.invokeMethod('startVpn', {
           'smartKey': _keyController.text.trim(),
-          'proxyOnly': _proxyOnly,
         });
       } on PlatformException catch (e) {
         _updateState('error');
@@ -317,30 +315,7 @@ class _VPNScreenState extends State<VPNScreen> with SingleTickerProviderStateMix
                 ),
               ),
 
-              const SizedBox(height: 12),
-
-              Theme(
-                data: ThemeData(brightness: Brightness.dark),
-                child: CheckboxListTile(
-                  title: const Text(
-                    "Только прокси (без VPN слота)",
-                    style: TextStyle(fontSize: 14, color: Colors.white70),
-                  ),
-                  subtitle: const Text(
-                    "Позволяет использовать другой VPN поверх",
-                    style: TextStyle(fontSize: 11, color: Colors.white38),
-                  ),
-                  value: _proxyOnly,
-                  onChanged: _vpnState == VPNState.disconnected 
-                    ? (val) => setState(() => _proxyOnly = val ?? false) 
-                    : null,
-                  activeColor: _accentColor,
-                  contentPadding: EdgeInsets.zero,
-                  controlAffinity: ListTileControlAffinity.leading,
-                ),
-              ),
-
-              const SizedBox(height: 12),
+              const SizedBox(height: 16),
 
               // Connect Button
               SizedBox(
