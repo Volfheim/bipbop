@@ -33,8 +33,8 @@ type WebRTCPeer struct {
 	keepAliveCh chan struct{}
 }
 
-func NewWebRTCPeer(roomURL, name string, onData func([]byte)) (*WebRTCPeer, error) {
-	conn, err := GetConnectionInfo(roomURL, name)
+func NewWebRTCPeer(roomURL, name, vpsIP string, onData func([]byte)) (*WebRTCPeer, error) {
+	conn, err := GetConnectionInfo(roomURL, name, vpsIP)
 	if err != nil {
 		return nil, err
 	}

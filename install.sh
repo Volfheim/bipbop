@@ -119,11 +119,21 @@ EOF
 add_client() {
     echo -e "\n${CYAN}>>> Создание ключа для клиента${NC}"
     read -r -p "Имя: " client_name
+    
+    # Теперь используем сам бинарник для генерации ключа, так как он умеет определять IP
+    smart_key=$(/usr/local/bin/volfheim-server gen | grep -v "┌" | grep -v "└" | grep -v "SMART KEY" | xargs)
+    # Если grep не сработал идеально, просто вызываем gen в конце. 
+    # Но для записи в файл лучше получить чистый ключ.
+    
+    # Вторая попытка получить чистый ключ через переменную окружения (если gen выводит слишком много мусора)
     password=$(grep VOLFHEIM_PASSWORD "$CONF_FILE" | cut -d '=' -f 2)
     room_url=$(get_room_url)
-    raw_data="$room_url|$password"
+    vps_ip=$(curl -s https://api.ipify.org)
+    raw_data="$room_url|$password|$vps_ip"
     smart_key=$(echo -n "$raw_data" | base64 | tr '+/' '-_' | tr -d '=' | tr -d '\n')
+
     echo "[$client_name] : $smart_key" >> "$CLIENTS_FILE"
+    echo -e "${GREEN}Новый ключ для $client_name:${NC}"
     echo -e "${YELLOW}$smart_key${NC}"
     read -r -p "Enter..."
 }

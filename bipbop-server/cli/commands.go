@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
 
 	"github.com/armon/go-socks5"
@@ -43,7 +46,19 @@ func NewGenerateCmd() *cobra.Command {
 			if room == "" {
 				room = "https://telemost.yandex.ru/j/1234567890" // Пример
 			}
-			key := core.EncodeSmartKey(room, password)
+
+			// Пытаемся автоматически определить публичный IP сервера
+			vpsIP := "YOUR_VPS_IP"
+			resp, err := http.Get("https://api.ipify.org")
+			if err == nil {
+				defer resp.Body.Close()
+				ipBytes, _ := io.ReadAll(resp.Body)
+				if len(ipBytes) > 0 {
+					vpsIP = string(ipBytes)
+				}
+			}
+
+			key := core.EncodeSmartKey(room, password, vpsIP)
 			fmt.Printf("\n\033[33m┌─── SMART KEY ───────────────────────────────────────────────┐\033[0m\n")
 			fmt.Printf("\033[33m│\033[0m \033[32m%s\033[0m\n", key)
 			fmt.Printf("\033[33m└─────────────────────────────────────────────────────────────┘\033[0m\n\n")
@@ -53,26 +68,38 @@ func NewGenerateCmd() *cobra.Command {
 }
 
 func runServer(cmd *cobra.Command, args []string) {
-	if password == "" {
-		b := make([]byte, 16)
-		rand.Read(b)
-		password = hex.EncodeToString(b)
-		fmt.Printf("[INFO] Auto-generated server password: %s\n", password)
-	}
-
-	fmt.Printf("[INFO] Volfheim Server (Host) running in Room: \033[32m%s\033[0m\n", listenAddr)
-
 	ctx := context.Background()
 	sess := &core.Session{}
 	rch := make(chan struct{}, 1)
 
-	ym, cl, err := core.Establish(listenAddr, password, true)
+	// --- Signaling Proxy ---
+	go func() {
+		http.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
+			room := r.URL.Query().Get("url")
+			if room == "" {
+				room = listenAddr
+			}
+			info, err := core.GetConnectionInfo(room, "VolfheimServer")
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(info)
+		})
+		fmt.Printf("[INFO] Signaling Proxy running on :8080\n")
+		http.ListenAndServe(":8080", nil)
+	}()
+
+	key := core.EncodeSmartKey(listenAddr, password, "")
+
+	ym, cl, err := core.Establish(nil, key, "Server", true)
 	if err == nil {
 		sess.Set(ym, cl)
 	}
 
 	go core.HealthLoop(ctx, sess, rch)
-	go core.ReconnectLoop(ctx, sess, listenAddr, password, true, rch)
+	go core.ReconnectLoop(ctx, sess, nil, key, "Server", true, rch)
 
 	srv, _ := socks5.New(&socks5.Config{})
 

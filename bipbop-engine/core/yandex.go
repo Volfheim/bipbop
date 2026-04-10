@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"sync"
 )
 
 var (
@@ -60,8 +61,30 @@ type ConnectionInfo struct {
 	} `json:"client_configuration"`
 }
 
+// CredsCache используется мобильным движком для кеширования учетных данных.
+type CredsCache struct {
+	sync.Mutex
+	// Можно добавить поля для реального кеширования, если потребуется.
+}
+
 // GetConnectionInfo запрашивает инфу для входа в телемост
-func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
+func GetConnectionInfo(roomURL, displayName string, proxyIP ...string) (*ConnectionInfo, error) {
+	// 1. Пытаемся напрямую (с нашим Fallback IP)
+	info, err := getRemoteConfig(roomURL, displayName)
+	if err == nil {
+		return info, nil
+	}
+
+	// 2. Если не вышло и у нас есть IP прокси (VPS)
+	if len(proxyIP) > 0 && proxyIP[0] != "" {
+		getLog().Warn(fmt.Sprintf("[API] Direct Yandex call failed. Trying via VPS Proxy: %s", proxyIP[0]))
+		return getProxyConfig(proxyIP[0], roomURL, displayName)
+	}
+
+	return nil, err
+}
+
+func getRemoteConfig(roomURL, displayName string) (*ConnectionInfo, error) {
 	u := fmt.Sprintf("%s/conferences/%s/connection", apiBase, url.QueryEscape(roomURL))
 
 	req, err := http.NewRequest("GET", u, nil)
@@ -86,7 +109,6 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 
 	resp, err := antiJammerClient.Do(req)
 	if err != nil {
-		getLog().Error(fmt.Sprintf("[API] Yandex API call failed: %v", err))
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -131,5 +153,24 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 		getLog().Info(fmt.Sprintf("[API]   ICE[%d]: urls=%v user=%s", i, s.URLs, s.Username))
 	}
 
+	return &info, nil
+}
+
+func getProxyConfig(proxyIP, roomURL, displayName string) (*ConnectionInfo, error) {
+	u := fmt.Sprintf("http://%s:8080/config?url=%s", proxyIP, url.QueryEscape(roomURL))
+	resp, err := http.Get(u)
+	if err != nil {
+		return nil, fmt.Errorf("vps proxy error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("vps proxy returned %d", resp.StatusCode)
+	}
+
+	var info ConnectionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, err
+	}
 	return &info, nil
 }

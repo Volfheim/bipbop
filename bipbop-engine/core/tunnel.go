@@ -73,32 +73,35 @@ func DeriveKey(pw string) []byte { h := sha256.Sum256([]byte(pw)); return h[:] }
 
 // --- Smart-key ---
 
-func ParseSmartKey(k string) (roomURL, pw string, err error) {
+func ParseSmartKey(k string) (roomURL, pw, vpsIP string, err error) {
 	var d []byte
 	d, err = base64.RawURLEncoding.DecodeString(k)
 	if err != nil {
 		d, err = base64.RawStdEncoding.DecodeString(k)
 		if err != nil {
-			return "", "", fmt.Errorf("invalid smart-key")
+			return "", "", "", fmt.Errorf("invalid smart-key")
 		}
 	}
-	parts := strings.SplitN(string(d), "|", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("corrupted smart-key")
+	parts := strings.Split(string(d), "|")
+	if len(parts) < 2 {
+		return "", "", "", fmt.Errorf("corrupted smart-key")
 	}
 	roomURL = parts[0]
 	pw = parts[1]
+	if len(parts) > 2 {
+		vpsIP = parts[2]
+	}
 	return
 }
 
-func EncodeSmartKey(roomURL, password string) string {
-	raw := roomURL + "|" + password
+func EncodeSmartKey(roomURL, password, vpsIP string) string {
+	raw := roomURL + "|" + password + "|" + vpsIP
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
 // Функции-заглушки для обратной совместимости вызовов извне (если были)
 func SmartKeyServerIP(k string) (string, error) {
-	room, _, err := ParseSmartKey(k)
+	room, _, _, err := ParseSmartKey(k)
 	return room, err
 }
 
@@ -130,16 +133,19 @@ func (m *MultiCloser) Close() error {
 
 // --- Establish tunnel (Telemost DataChannel) ---
 
-func Establish(roomURL, pw string, isServer bool) (*yamux.Session, io.Closer, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+func Establish(cache *CredsCache, key, name string, isServer bool) (*yamux.Session, io.Closer, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	name := "Guest"
-	if isServer {
-		name = "Host"
+	roomURL, password, vpsIP, err := ParseSmartKey(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid smart-key: %w", err)
 	}
 
-	peer, err := NewWebRTCPeer(roomURL, name, nil)
+	// password пока не используется в WebRTC, но может пригодиться для аутентификации.
+	_ = password 
+
+	peer, err := NewWebRTCPeer(roomURL, name, vpsIP, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to init WebRTC: %w", err)
 	}
@@ -148,7 +154,7 @@ func Establish(roomURL, pw string, isServer bool) (*yamux.Session, io.Closer, er
 	stream := NewDCStream(peer)
 
 	log := getLog()
-	log.Info(fmt.Sprintf("[ENG] Connecting to Telemost Room... (%s)", name))
+	log.Info(fmt.Sprintf("[ENG] Connecting to Telemost Room... (%s) via Proxy: %s", roomURL, vpsIP))
 
 	if err := peer.Connect(ctx); err != nil {
 		stream.Close()
@@ -265,7 +271,7 @@ func HealthLoop(ctx context.Context, sess *Session, rch chan<- struct{}) {
 	}
 }
 
-func ReconnectLoop(ctx context.Context, sess *Session, roomURL, pw string, isServer bool, rch <-chan struct{}) {
+func ReconnectLoop(ctx context.Context, sess *Session, cache *CredsCache, key, name string, isServer bool, rch <-chan struct{}) {
 	log := getLog()
 	lis := getLis()
 	for {
@@ -282,7 +288,7 @@ func ReconnectLoop(ctx context.Context, sess *Session, roomURL, pw string, isSer
 				default:
 				}
 				log.Info(fmt.Sprintf("Reconnecting (#%d)...", a))
-				y, c, e := Establish(roomURL, pw, isServer)
+				y, c, e := Establish(cache, key, name, isServer)
 				if e == nil {
 					sess.Set(y, c)
 					lis.OnStatus("connected")
