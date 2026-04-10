@@ -60,7 +60,7 @@ func (e *vpnEngine) run() error {
 		}
 	}()
 
-	// 3. Start tun2socks first (VPN Slot mode)
+	// 3. Start tun2socks only if tunFd != -1 (VPN Slot mode)
 	if e.tunFd != -1 {
 		t2s, err := newTun2Socks(e.tunFd, socksAddr, e.mtu, e.dns)
 		if err != nil {

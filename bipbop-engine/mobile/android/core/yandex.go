@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -53,21 +52,11 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	req.Header.Set("Origin", "https://telemost.yandex.ru")
 	req.Header.Set("Referer", "https://telemost.yandex.ru/")
 
-	getLog().Info("[API] Resolving cloud-api.yandex.ru...")
-
-	// Use default transport — on Android it uses cgo DNS (getaddrinfo)
-	// which correctly resolves via ISP DNS under DPI whitelists.
-	client := &http.Client{Timeout: 15 * time.Second}
-
-	getLog().Info("[API] Sending request to Yandex Telemost API...")
-
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
-	getLog().Info(fmt.Sprintf("[API] Response status: %d", resp.StatusCode))
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -87,6 +76,14 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 		if iceRaw, ok := cc["ice_servers"]; ok {
 			iceJSON, _ := json.Marshal(iceRaw)
 			getLog().Info(fmt.Sprintf("[API] ICE servers from Yandex: %s", string(iceJSON)))
+		} else {
+			getLog().Warn("[API] No ice_servers in client_configuration!")
+			// Log all keys in client_configuration
+			keys := make([]string, 0)
+			for k := range cc {
+				keys = append(keys, k)
+			}
+			getLog().Info(fmt.Sprintf("[API] client_configuration keys: %v", keys))
 		}
 	}
 
@@ -96,5 +93,10 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	}
 
 	getLog().Info(fmt.Sprintf("[API] MediaServerURL: %s", info.ClientConfig.MediaServerURL))
+	getLog().Info(fmt.Sprintf("[API] ICE servers count: %d", len(info.ClientConfig.ICEServers)))
+	for i, s := range info.ClientConfig.ICEServers {
+		getLog().Info(fmt.Sprintf("[API]   ICE[%d]: urls=%v user=%s", i, s.URLs, s.Username))
+	}
+
 	return &info, nil
 }

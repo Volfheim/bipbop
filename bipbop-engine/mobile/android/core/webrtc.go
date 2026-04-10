@@ -63,7 +63,7 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	config := webrtc.Configuration{
 		ICEServers:         iceServers,
 		SDPSemantics:       webrtc.SDPSemanticsUnifiedPlan,
-		ICETransportPolicy: webrtc.ICETransportPolicyAll,
+		ICETransportPolicy: webrtc.ICETransportPolicyRelay, // Force TURN relay to survive DPI
 	}
 
 	settingEngine := webrtc.SettingEngine{}
@@ -110,7 +110,6 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		}
 	})
 
-	// Establish WebSocket connection
 	ws, _, err := websocket.DefaultDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
 		return err
@@ -121,8 +120,6 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
 	})
-
-	ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 	go p.keepAlive()
 
@@ -207,13 +204,6 @@ func (p *WebRTCPeer) handleSignaling() {
 
 		uid, _ := msg["uid"].(string)
 
-		// Extend deadline on every received message
-		p.wsMu.Lock()
-		if p.ws != nil {
-			p.ws.SetReadDeadline(time.Now().Add(60 * time.Second))
-		}
-		p.wsMu.Unlock()
-
 		if _, ok := msg["serverHello"]; ok {
 			p.sendAck(uid)
 		}
@@ -225,11 +215,6 @@ func (p *WebRTCPeer) handleSignaling() {
 		}
 		if _, ok := msg["ping"]; ok {
 			p.sendPong(uid)
-			continue
-		}
-		if _, ok := msg["pong"]; ok {
-			p.sendAck(uid)
-			continue
 		}
 
 		if offer, ok := msg["subscriberSdpOffer"].(map[string]interface{}); ok && !pubSent {

@@ -132,14 +132,6 @@ func Java_com_volfheim_bipbop_BipBopVpnService_startVpnNative(env *C.JNIEnv, ser
 	return 0
 }
 
-//export Java_com_volfheim_bipbop_BipBopVpnService_setUpstreamProxyNative
-func Java_com_volfheim_bipbop_BipBopVpnService_setUpstreamProxyNative(env *C.JNIEnv, service C.jobject, addr C.jstring) {
-	ptr := C.env_GetStringUTFChars(env, addr, nil)
-	s := C.GoString((*C.char)(unsafe.Pointer(ptr)))
-	C.env_ReleaseStringUTFChars(env, addr, ptr)
-	SetUpstreamProxy(s)
-}
-
 //export Java_com_volfheim_bipbop_BipBopVpnService_reconnectVpnNative
 func Java_com_volfheim_bipbop_BipBopVpnService_reconnectVpnNative(env *C.JNIEnv, service C.jobject) {
 	Reconnect()

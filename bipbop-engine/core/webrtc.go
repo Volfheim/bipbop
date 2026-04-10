@@ -110,7 +110,6 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		}
 	})
 
-	// Establish WebSocket connection
 	ws, _, err := websocket.DefaultDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
 		return err

@@ -68,10 +68,6 @@ func SetListener(l EventListener) {
 	core.SetListener(mobileStatus{})
 }
 
-func SetUpstreamProxy(addr string) {
-	// Reversion: Upstream proxy support removed to restore 21:54 stability
-}
-
 func Start(smartKey string, tunFd int, mtu int, dns string) error {
 	mu.Lock()
 	if vpnEng != nil {
