@@ -54,6 +54,7 @@ func NewGenerateCmd() *cobra.Command {
 }
 
 func runServer(cmd *cobra.Command, args []string) {
+	fmt.Printf("[INFO] Volfheim Server %s starting...\n", core.Version)
 	ctx := context.Background()
 	sess := &core.Session{}
 	rch := make(chan struct{}, 1)
