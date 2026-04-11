@@ -14,6 +14,13 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+// Пул IP-адресов для goloom.strm.yandex.net
+var mediaIPs = []string{
+	"87.250.254.244",
+	"87.250.250.12",
+	"213.180.204.244",
+}
+
 type WebRTCPeer struct {
 	roomURL         string
 	name            string
@@ -104,7 +111,7 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		})
 	})
 
-	// Применяем FragDialer для WebSocket-соединения с Медиа-сервером
+	// Применяем FragDialer + IP Fallback для WebSocket-соединения в гипер-режиме
 	fd := &FragDialer{
 		Dialer: net.Dialer{
 			Timeout:   10 * time.Second,
@@ -113,13 +120,34 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	}
 
 	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		NetDialContext:   fd.DialContext,
+		HandshakeTimeout: 15 * time.Second,
+		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, _ := net.SplitHostPort(addr)
+
+			// 1. Стандарт + Фрагментация
+			conn, err := fd.DialContext(ctx, "tcp4", addr)
+			if err == nil {
+				return conn, nil
+			}
+
+			// 2. Резервный пул IP + Фрагментация
+			if host == "goloom.strm.yandex.net" {
+				getLog().Warn(fmt.Sprintf("[RTC] DNS failed for %s, trying fallback IPs + Fragmentation...", host))
+				for _, ip := range mediaIPs {
+					conn, err = fd.DialContext(ctx, "tcp4", net.JoinHostPort(ip, port))
+					if err == nil {
+						getLog().Info(fmt.Sprintf("[RTC] Connected to Media via IP + frag: %s", ip))
+						return conn, nil
+					}
+				}
+			}
+			return nil, err
+		},
 	}
 
 	ws, _, err := dialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
-		return fmt.Errorf("media ws dial error (DPI block?): %w", err)
+		return fmt.Errorf("media ws Hyper-Dial error: %w", err)
 	}
 	p.ws = ws
 

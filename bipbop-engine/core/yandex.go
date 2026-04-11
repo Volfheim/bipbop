@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,15 @@ import (
 )
 
 const apiBase = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"
+
+// Пул IP-адресов для cloud-api.yandex.ru для обхода блокировок DNS (lookup timeout)
+var apiIPs = []string{
+	"213.180.204.127",
+	"213.180.193.127",
+	"77.88.21.127",
+	"87.250.250.127",
+	"5.255.255.127",
+}
 
 type ConnectionInfo struct {
 	RoomID       string `json:"room_id"`
@@ -46,7 +56,7 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	req.Header.Set("Origin", "https://telemost.yandex.ru")
 	req.Header.Set("Referer", "https://telemost.yandex.ru/")
 
-	// Используем FragDialer для обхода SNI-блокировок
+	// Прокачанный FragDialer для гипер-режима
 	fd := &FragDialer{
 		Dialer: net.Dialer{
 			Timeout:   10 * time.Second,
@@ -57,17 +67,35 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
-			DialContext: fd.DialContext,
-			// DoH-like поведение: если обычный резолв упадет, Go попробует Dial заново.
-			// В FragDialer мы можем добавить DoH логику позже, если обычный Dial будет виснуть на lookup.
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, port, _ := net.SplitHostPort(addr)
+
+				// 1. Пытаемся стандартно + Фрагментация
+				conn, err := fd.DialContext(ctx, "tcp4", addr)
+				if err == nil {
+					return conn, nil
+				}
+
+				// 2. Если DNS подвел или таймаут, пробуем наш пул IP + Фрагментация
+				if host == "cloud-api.yandex.ru" {
+					getLog().Warn(fmt.Sprintf("[API] DNS failed for %s, trying fallback IPs + Fragmentation...", host))
+					for _, ip := range apiIPs {
+						conn, err = fd.DialContext(ctx, "tcp4", net.JoinHostPort(ip, port))
+						if err == nil {
+							getLog().Info(fmt.Sprintf("[API] Connected via fallback IP + Frag: %s", ip))
+							return conn, nil
+						}
+					}
+				}
+				return nil, err
+			},
+			ForceAttemptHTTP2: false,
 		},
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// Если Client.Timeout exceeded, значит даже фрагментация на этом IP не помогла,
-		// либо DNS всё еще лежит. 
-		return nil, fmt.Errorf("Yandex API unreachable (DPI/DNS block): %w", err)
+		return nil, fmt.Errorf("Yandex API unreachable (Hyper Mode Failed): %w", err)
 	}
 	defer resp.Body.Close()
 
