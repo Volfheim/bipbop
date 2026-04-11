@@ -132,7 +132,7 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 
 			// 2. Резервный пул IP + Фрагментация
 			if host == "goloom.strm.yandex.net" {
-				getLog().Warn(fmt.Sprintf("[RTC] DNS failed for %s, trying fallback IPs + Fragmentation...", host))
+				getLog().Warn(fmt.Sprintf("[RTC] DNS failed for %s, trying fallback IP + Fragmentation...", host))
 				for _, ip := range mediaIPs {
 					conn, err = fd.DialContext(ctx, "tcp4", net.JoinHostPort(ip, port))
 					if err == nil {

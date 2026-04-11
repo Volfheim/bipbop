@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	Version     = "3.1-STEALTH"
+	Version     = "3.2-HYPER"
 	DefPort     = "8443"
 	MaxBackoff  = 60 * time.Second
 	HealthEvery = 15 * time.Second
@@ -131,9 +131,7 @@ func (m *MultiCloser) Close() error {
 // --- Establish tunnel (Telemost DataChannel) ---
 
 func Establish(cache *CredsCache, key, name string, isServer bool) (*yamux.Session, io.Closer, error) {
-	log := getLog()
-	log.Info(fmt.Sprintf("[ENG] Establishing initial tunnel... (Version: %s)", Version))
-
+	getLog().Info(fmt.Sprintf("[ENG] Establishing initial tunnel... (Version: %s)", Version))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -153,7 +151,7 @@ func Establish(cache *CredsCache, key, name string, isServer bool) (*yamux.Sessi
 	// Адаптер (DCStream) сам поставит onData callback внутрь peer
 	stream := NewDCStream(peer)
 
-	log.Info(fmt.Sprintf("[ENG] Connecting to Telemost Room... (%s)", roomURL))
+	getLog().Info(fmt.Sprintf("[ENG] Connecting to Telemost Room... (%s)", roomURL))
 
 	if err := peer.Connect(ctx); err != nil {
 		stream.Close()

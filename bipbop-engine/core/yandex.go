@@ -78,7 +78,7 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 
 				// 2. Если DNS подвел или таймаут, пробуем наш пул IP + Фрагментация
 				if host == "cloud-api.yandex.ru" {
-					getLog().Warn(fmt.Sprintf("[API] DNS failed for %s, trying fallback IPs + Fragmentation...", host))
+					getLog().Warn(fmt.Sprintf("[API] DNS failed for %s, trying fallback IP + Fragmentation...", host))
 					for _, ip := range apiIPs {
 						conn, err = fd.DialContext(ctx, "tcp4", net.JoinHostPort(ip, port))
 						if err == nil {
