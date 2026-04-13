@@ -56,41 +56,36 @@ func NewGenerateCmd() *cobra.Command {
 func runServer(cmd *cobra.Command, args []string) {
 	fmt.Printf("[INFO] Volfheim Server %s starting...\n", core.Version)
 	ctx := context.Background()
+	sess := &core.Session{}
+	rch := make(chan struct{}, 1)
 
 	key := core.EncodeSmartKey(listenAddr, password)
 
-	// Establish возвращает DCStream теперь (как в olcrtc)
-	stream, cl, err := core.Establish(nil, key, "Server", true)
-	if err != nil {
-		fmt.Printf("[ERROR] Initial establish failed: %v\n", err)
-		return
+	ym, cl, err := core.Establish(nil, key, "Server", true)
+	if err == nil {
+		sess.Set(ym, cl)
 	}
-	defer cl.Close()
 
-	fmt.Println("[INFO] Tunnel established, starting SOCKS5 server over DataChannel...")
+	go core.HealthLoop(ctx, sess, rch)
+	go core.ReconnectLoop(ctx, sess, nil, key, "Server", true, rch)
 
 	srv, _ := socks5.New(&socks5.Config{})
 
-	// Сервер принимает SocksHandshake через DataChannel
-	// В olcrtc это делается через мультиплексор, тут через yamux-like dc stream
-	// Для простоты: запуск socks5 сервера на единственном connection
-	_ = ctx
-	_ = stream
-
-	// Простой серверный цикл: обслуживать соединение напрямую через DataChannel
 	for {
-		fmt.Println("[INFO] Serving SOCKS5 over DataChannel...")
-		if err := srv.ServeConn(stream); err != nil {
-			fmt.Printf("[WARN] ServeConn error: %v, reconnecting...\n", err)
-			// Reconnect
-			time.Sleep(3 * time.Second)
-			stream, cl, err = core.Establish(nil, key, "Server", true)
-			if err != nil {
-				fmt.Printf("[ERROR] Reconnect failed: %v\n", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-			fmt.Println("[INFO] Reconnected!")
+		y, ok := sess.Get()
+		if !ok || y == nil {
+			time.Sleep(1 * time.Second)
+			continue
 		}
+
+		st, err := y.AcceptStream()
+		if err != nil {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		go func() {
+			fmt.Printf("[INFO] Accepted new stream\n")
+			srv.ServeConn(st)
+		}()
 	}
 }
