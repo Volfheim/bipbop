@@ -81,14 +81,19 @@ static void env_ReleaseStringUTFChars(JNIEnv* env, jstring str, const char* char
 import "C"
 import (
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
-var jniMu sync.Mutex
+var (
+	jniMu      sync.Mutex
+	jniStopped atomic.Bool
+)
 
 type jniListener struct{}
 
 func (jniListener) OnStatusChanged(status string) {
+	if jniStopped.Load() { return }
 	jniMu.Lock()
 	defer jniMu.Unlock()
 	cs := C.CString(status)
@@ -97,6 +102,7 @@ func (jniListener) OnStatusChanged(status string) {
 }
 
 func (jniListener) OnLog(level, msg string) {
+	if jniStopped.Load() { return }
 	jniMu.Lock()
 	defer jniMu.Unlock()
 	cl := C.CString(level)
@@ -139,6 +145,7 @@ func Java_com_volfheim_bipbop_BipBopVpnService_reconnectVpnNative(env *C.JNIEnv,
 
 //export Java_com_volfheim_bipbop_BipBopVpnService_stopVpnNative
 func Java_com_volfheim_bipbop_BipBopVpnService_stopVpnNative(env *C.JNIEnv, service C.jobject) {
+	jniStopped.Store(true)
 	Stop()
 	
 	jniMu.Lock()

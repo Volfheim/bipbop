@@ -337,8 +337,11 @@ func (m *Multiplexer) CleanupStream(sid uint16) {
 
 // MuxConn адаптер
 type MuxConn struct {
-	sid   uint16
-	mux   *Multiplexer
+	sid           uint16
+	mux           *Multiplexer
+	readDeadline  time.Time
+	writeDeadline time.Time
+	mu            sync.RWMutex
 }
 
 func NewMuxConn(sid uint16, mux *Multiplexer) *MuxConn {
@@ -346,6 +349,10 @@ func NewMuxConn(sid uint16, mux *Multiplexer) *MuxConn {
 }
 
 func (c *MuxConn) Read(b []byte) (int, error) {
+	c.mu.RLock()
+	deadline := c.readDeadline
+	c.mu.RUnlock()
+
 	for {
 		n, err := c.mux.ReadStream(c.sid, b)
 		if n > 0 {
@@ -355,10 +362,23 @@ func (c *MuxConn) Read(b []byte) (int, error) {
 			return 0, err
 		}
 		if c.mux.StreamClosed(c.sid) {
-			return 0, fmt.Errorf("EOF")
+			return 0, io.EOF
 		}
+
+		var timeoutCh <-chan time.Time
+		if !deadline.IsZero() {
+			diff := time.Until(deadline)
+			if diff <= 0 {
+				return 0, fmt.Errorf("i/o timeout")
+			}
+			timeoutCh = time.After(diff)
+		}
+
 		select {
 		case <-c.mux.WaitForData(c.sid):
+			// Данные пришли или стрим закрыт, пробуем читать еще раз
+		case <-timeoutCh:
+			return 0, fmt.Errorf("i/o timeout")
 		}
 	}
 }
@@ -379,6 +399,24 @@ func (c *MuxConn) Close() error {
 
 func (c *MuxConn) LocalAddr() net.Addr                { return AddrMock{addr: "mux-local"} }
 func (c *MuxConn) RemoteAddr() net.Addr               { return AddrMock{addr: "mux-remote"} }
-func (c *MuxConn) SetDeadline(t time.Time) error      { return nil }
-func (c *MuxConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *MuxConn) SetWriteDeadline(t time.Time) error { return nil }
+func (c *MuxConn) SetDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.readDeadline = t
+	c.writeDeadline = t
+	return nil
+}
+
+func (c *MuxConn) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.readDeadline = t
+	return nil
+}
+
+func (c *MuxConn) SetWriteDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writeDeadline = t
+	return nil
+}

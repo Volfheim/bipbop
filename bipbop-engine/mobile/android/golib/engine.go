@@ -26,6 +26,7 @@ type vpnEngine struct {
 	txBytes   atomic.Int64
 	rxBytes   atomic.Int64
 	dnsSem    chan struct{}
+	wg        sync.WaitGroup
 }
 
 func (e *vpnEngine) run() error {
@@ -43,7 +44,11 @@ func (e *vpnEngine) run() error {
 		return err
 	}
 	defer socksLn.Close()
-	go e.serveSocks5(socksLn)
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.serveSocks5(socksLn)
+	}()
 
 	// 2. First-time Establishment
 	logToApp("info", "[ENG] Establishing initial tunnel...")
@@ -102,6 +107,7 @@ func (e *vpnEngine) run() error {
 
 func (e *vpnEngine) stop() {
 	e.cancel()
+	e.wg.Wait()
 	e.sess.Stop()
 }
 
@@ -117,11 +123,15 @@ func (e *vpnEngine) serveSocks5(ln net.Listener) {
 				continue
 			}
 		}
-		go e.handleSocks5(conn)
-	}
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		defer c.Close()
+		e.handleSocksClient(c)
+	}()
 }
 
-func (e *vpnEngine) handleSocks5(c net.Conn) {
+func (e *vpnEngine) handleSocksClient(c net.Conn) {
 	logToApp("info", "[ENG] New SOCKS5 connection handling started")
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(60 * time.Second))
