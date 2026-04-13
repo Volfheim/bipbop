@@ -41,7 +41,7 @@ func NewGenerateCmd() *cobra.Command {
 			}
 			room := listenAddr
 			if room == "" {
-				room = "https://telemost.yandex.ru/j/1234567890" // Пример
+				room = "https://telemost.yandex.ru/j/1234567890"
 			}
 
 			key := core.EncodeSmartKey(room, password)
@@ -66,8 +66,54 @@ func runServer(cmd *cobra.Command, args []string) {
 		sess.Set(ym, cl)
 	}
 
-	go core.HealthLoop(ctx, sess, rch)
-	go core.ReconnectLoop(ctx, sess, nil, key, "Server", true, rch)
+	// Health check
+	go func() {
+		tk := time.NewTicker(core.HealthEvery)
+		defer tk.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tk.C:
+				if y, ok := sess.Get(); ok && y != nil {
+					if _, e := y.Ping(); e != nil {
+						fmt.Println("[WARN] Connection lost")
+						sess.Down()
+						select {
+						case rch <- struct{}{}:
+						default:
+						}
+					}
+				}
+			}
+		}
+	}()
+
+	// Reconnect loop
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-rch:
+				bo := 2 * time.Second
+				for a := 1; ; a++ {
+					fmt.Printf("[INFO] Reconnecting (#%d)...\n", a)
+					y, c, e := core.Establish(nil, key, "Server", true)
+					if e == nil {
+						sess.Set(y, c)
+						fmt.Println("[INFO] Connection restored!")
+						break
+					}
+					fmt.Printf("[WARN] Attempt %d failed: %v\n", a, e)
+					time.Sleep(bo)
+					if bo *= 2; bo > core.MaxBackoff {
+						bo = core.MaxBackoff
+					}
+				}
+			}
+		}
+	}()
 
 	srv, _ := socks5.New(&socks5.Config{})
 
