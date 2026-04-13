@@ -1,5 +1,5 @@
-// Package core is the shared Lionheart tunnel engine.
-// Both the CLI (cmd/lionheart) and mobile bridge (mobile/golib) import this.
+// Package core — движок Bip-Bop VPN.
+// Прямая копия архитектуры olcrtc (https://github.com/openlibrecommunity/olcrtc)
 package core
 
 import (
@@ -13,12 +13,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/hashicorp/yamux"
 )
 
 const (
-	Version     = "3.2-HYPER"
+	Version     = "4.0-OLCRTC"
 	DefPort     = "8443"
 	MaxBackoff  = 60 * time.Second
 	HealthEvery = 15 * time.Second
@@ -96,42 +94,16 @@ func EncodeSmartKey(roomURL, password string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
-// Функции-заглушки для обратной совместимости вызовов извне (если были)
 func SmartKeyServerIP(k string) (string, error) {
 	room, _, err := ParseSmartKey(k)
 	return room, err
 }
 
-// --- Yamux config ---
+// --- Establish tunnel (Telemost DataChannel, olcrtc style) ---
 
-func YmxCfg() *yamux.Config {
-	c := yamux.DefaultConfig()
-	c.EnableKeepAlive = true
-	c.KeepAliveInterval = 10 * time.Second
-	c.ConnectionWriteTimeout = 20 * time.Second
-	c.StreamOpenTimeout = 20 * time.Second
-	return c
-}
-
-// --- Closer helpers ---
-
-type CloserFunc func()
-
-func (f CloserFunc) Close() error { f(); return nil }
-
-type MultiCloser struct{ CC []io.Closer }
-
-func (m *MultiCloser) Close() error {
-	for _, c := range m.CC {
-		c.Close()
-	}
-	return nil
-}
-
-// --- Establish tunnel (Telemost DataChannel) ---
-
-func Establish(cache *CredsCache, key, name string, isServer bool) (*yamux.Session, io.Closer, error) {
-	getLog().Info(fmt.Sprintf("[ENG] Establishing initial tunnel... (Version: %s)", Version))
+func Establish(cache *CredsCache, key, name string, isServer bool) (*DCStream, io.Closer, error) {
+	log := getLog()
+	log.Info(fmt.Sprintf("[ENG] Establishing tunnel... (Version: %s)", Version))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -139,44 +111,32 @@ func Establish(cache *CredsCache, key, name string, isServer bool) (*yamux.Sessi
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid smart-key: %w", err)
 	}
-
-	// password пока не используется в WebRTC, но может пригодиться для аутентификации.
-	_ = password 
+	_ = password
 
 	peer, err := NewWebRTCPeer(roomURL, name, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to init WebRTC: %w", err)
 	}
 
-	// Адаптер (DCStream) сам поставит onData callback внутрь peer
 	stream := NewDCStream(peer)
 
-	getLog().Info(fmt.Sprintf("[ENG] Connecting to Telemost Room... (%s)", roomURL))
+	log.Info(fmt.Sprintf("[ENG] Connecting to Telemost Room... (%s)", roomURL))
 
 	if err := peer.Connect(ctx); err != nil {
 		stream.Close()
 		return nil, nil, fmt.Errorf("telemost connect error: %w", err)
 	}
 
-	var ym *yamux.Session
-	if isServer {
-		ym, err = yamux.Server(stream, YmxCfg())
-	} else {
-		ym, err = yamux.Client(stream, YmxCfg())
-	}
-	if err != nil {
-		stream.Close()
-		return nil, nil, fmt.Errorf("yamux error: %w", err)
-	}
+	log.Info("[ENG] DataChannel established!")
 
-	return ym, &MultiCloser{[]io.Closer{ym, stream}}, nil
+	return stream, stream, nil
 }
 
 // --- Session wrapper ---
 
 type Session struct {
 	sync.RWMutex
-	Ym      *yamux.Session
+	stream  *DCStream
 	Cl      io.Closer
 	Ch      chan struct{}
 	Ok      bool
@@ -184,7 +144,7 @@ type Session struct {
 	RxBytes atomic.Int64
 }
 
-func (s *Session) Set(y *yamux.Session, c io.Closer) {
+func (s *Session) Set(st *DCStream, c io.Closer) {
 	s.Lock()
 	defer s.Unlock()
 	if s.Cl != nil {
@@ -198,7 +158,7 @@ func (s *Session) Set(y *yamux.Session, c io.Closer) {
 		}
 	}
 	s.Ch = make(chan struct{})
-	s.Ym, s.Cl, s.Ok = y, c, true
+	s.stream, s.Cl, s.Ok = st, c, true
 }
 
 func (s *Session) Wait() <-chan struct{} {
@@ -207,10 +167,10 @@ func (s *Session) Wait() <-chan struct{} {
 	return s.Ch
 }
 
-func (s *Session) Get() (*yamux.Session, bool) {
+func (s *Session) GetStream() (*DCStream, bool) {
 	s.RLock()
 	defer s.RUnlock()
-	return s.Ym, s.Ok
+	return s.stream, s.Ok
 }
 
 func (s *Session) Down() {
@@ -240,76 +200,13 @@ func (s *Session) Stop() {
 			close(s.Ch)
 		}
 	}
-	s.Ym, s.Ok = nil, false
+	s.stream, s.Ok = nil, false
 }
 
-// --- Health + reconnect loops ---
+// --- SOCKS5 handshake (used by server) ---
 
-func HealthLoop(ctx context.Context, sess *Session, rch chan<- struct{}) {
-	log := getLog()
-	tk := time.NewTicker(HealthEvery)
-	defer tk.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tk.C:
-			if y, ok := sess.Get(); ok && y != nil {
-				if _, e := y.Ping(); e != nil {
-					log.Warn("Connection lost")
-					sess.Down()
-					select {
-					case rch <- struct{}{}:
-					default:
-					}
-				}
-			}
-		}
-	}
-}
-
-func ReconnectLoop(ctx context.Context, sess *Session, cache *CredsCache, key, name string, isServer bool, rch <-chan struct{}) {
-	log := getLog()
-	lis := getLis()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-rch:
-			lis.OnStatus("reconnecting")
-			bo := 2 * time.Second
-			for a := 1; ; a++ {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-				log.Info(fmt.Sprintf("Reconnecting (#%d)...", a))
-				y, c, e := Establish(cache, key, name, isServer)
-				if e == nil {
-					sess.Set(y, c)
-					lis.OnStatus("connected")
-					log.Info("Connection restored!")
-					break
-				}
-				log.Warn(fmt.Sprintf("Attempt %d failed: %v", a, e))
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(bo):
-				}
-				if bo *= 2; bo > MaxBackoff {
-					bo = MaxBackoff
-				}
-			}
-		}
-	}
-}
-
-// SocksHandshake performs the initial SOCKS5 handshake and returns the target address.
 func SocksHandshake(c net.Conn) (string, error) {
 	buf := make([]byte, 258)
-	// 1. Version + Methods
 	if _, err := io.ReadFull(c, buf[:2]); err != nil || buf[0] != 0x05 {
 		return "", fmt.Errorf("socks5 only")
 	}
@@ -319,10 +216,8 @@ func SocksHandshake(c net.Conn) (string, error) {
 			return "", err
 		}
 	}
-	// No auth
 	c.Write([]byte{0x05, 0x00})
 
-	// 2. Request
 	if _, err := io.ReadFull(c, buf[:4]); err != nil || buf[0] != 0x05 || buf[1] != 0x01 {
 		return "", fmt.Errorf("socks5 connect only")
 	}
@@ -330,13 +225,13 @@ func SocksHandshake(c net.Conn) (string, error) {
 	addrType := buf[3]
 	var host string
 	switch addrType {
-	case 0x01: // IPv4
+	case 0x01:
 		b := make([]byte, 4)
 		if _, err := io.ReadFull(c, b); err != nil {
 			return "", err
 		}
 		host = net.IP(b).String()
-	case 0x03: // Domain
+	case 0x03:
 		b := make([]byte, 1)
 		if _, err := io.ReadFull(c, b); err != nil {
 			return "", err
@@ -347,7 +242,7 @@ func SocksHandshake(c net.Conn) (string, error) {
 			return "", err
 		}
 		host = string(db)
-	case 0x04: // IPv6
+	case 0x04:
 		b := make([]byte, 16)
 		if _, err := io.ReadFull(c, b); err != nil {
 			return "", err
@@ -363,8 +258,12 @@ func SocksHandshake(c net.Conn) (string, error) {
 	}
 	port := int(pb[0])<<8 | int(pb[1])
 
-	// Reply success (dummy BND.ADDR)
 	c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 
 	return fmt.Sprintf("%s:%d", host, port), nil
 }
+
+// CredsCache - заглушка для обратной совместимости
+type CredsCache struct{}
+
+func NewCredsCache() *CredsCache { return &CredsCache{} }

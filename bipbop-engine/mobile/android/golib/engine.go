@@ -25,7 +25,7 @@ type vpnEngine struct {
 	connCount atomic.Int64
 	txBytes   atomic.Int64
 	rxBytes   atomic.Int64
-	dnsSem    chan struct{} // STABILITY FIX: Limit concurrent DNS queries to prevent OOM
+	dnsSem    chan struct{}
 }
 
 func (e *vpnEngine) run() error {
@@ -40,39 +40,19 @@ func (e *vpnEngine) run() error {
 	defer socksLn.Close()
 	go e.serveSocks5(socksLn)
 
-	// 2. Start Health Check (triggers sess.Down -> sess.Wait)
-	go func() {
-		tk := time.NewTicker(core.HealthEvery)
-		defer tk.Stop()
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-tk.C:
-				if y, ok := e.sess.Get(); ok && y != nil {
-					if _, err := y.Ping(); err != nil {
-						logToApp("warn", "[ENG] Link health check failed")
-						e.sess.Down()
-					}
-				}
-			}
-		}
-	}()
-
-	// 3. First-time Establishment (SIGNALLING PHASE)
-	// We MUST do this BEFORE starting tun2socks to avoid DNS deadlock on cold start.
+	// 2. First-time Establishment (SIGNALLING PHASE)
 	logToApp("info", "[ENG] Establishing initial tunnel...")
-	ym, cl, err := core.Establish(nil, e.peer, "Guest", false)
+	stream, cl, err := core.Establish(nil, e.peer, "Guest", false)
 	if err != nil {
 		logToApp("error", fmt.Sprintf("[ENG] Initial establish failed: %v", err))
 		emit("error")
 		return err
 	}
-	e.sess.Set(ym, cl)
+	e.sess.Set(stream, cl)
 	emit("connected")
 	logToApp("info", "[ENG] Initial tunnel established!")
 
-	// 4. Start tun2socks only if tunFd != -1 
+	// 3. Start tun2socks only if tunFd != -1
 	if e.tunFd != -1 {
 		t2s, err := newTun2Socks(e.tunFd, socksAddr, e.mtu, e.dns)
 		if err != nil {
@@ -84,7 +64,7 @@ func (e *vpnEngine) run() error {
 		logToApp("info", "[ENG] Обычный SOCKS5 режим (без захвата VPN-слота)")
 	}
 
-	// 5. Main Reconnect Loop
+	// 4. Main Reconnect Loop
 	for {
 		select {
 		case <-e.ctx.Done():
@@ -93,9 +73,8 @@ func (e *vpnEngine) run() error {
 			logToApp("warn", "[ENG] Connection lost - redialing...")
 			emit("reconnecting")
 
-			// Redial logic
 			for {
-				ym, cl, err := core.Establish(nil, e.peer, "Guest", false)
+				stream, cl, err := core.Establish(nil, e.peer, "Guest", false)
 				if err != nil {
 					logToApp("error", fmt.Sprintf("[ENG] Redial failed: %v, retrying...", err))
 					select {
@@ -105,7 +84,7 @@ func (e *vpnEngine) run() error {
 						continue
 					}
 				}
-				e.sess.Set(ym, cl)
+				e.sess.Set(stream, cl)
 				emit("connected")
 				logToApp("info", "[ENG] Re-established!")
 				break
@@ -142,6 +121,30 @@ func (e *vpnEngine) handleSocks5(c net.Conn) {
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(60 * time.Second))
 
+	// Получаем DCStream для туннелирования
+	stream, ok := e.sess.GetStream()
+	if !ok || stream == nil {
+		// Ждём несколько секунд для переподключения
+		for i := 0; i < 25; i++ {
+			select {
+			case <-e.ctx.Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+				stream, ok = e.sess.GetStream()
+			}
+			if ok && stream != nil {
+				break
+			}
+		}
+	}
+
+	if !ok || stream == nil {
+		c.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
+
+	// Просто перенаправляем SOCKS5 через DataChannel как в olcrtc
+	// Сначала SOCKS5 handshake с клиентом (tun2socks)
 	buf := make([]byte, 258)
 	n, err := c.Read(buf)
 	if err != nil || n < 2 || buf[0] != 0x05 {
@@ -154,64 +157,20 @@ func (e *vpnEngine) handleSocks5(c net.Conn) {
 		return
 	}
 
-	cmd := buf[1]
-	dstAddr, dstPort := parseSocks5Addr(buf[3:n])
-
-	switch cmd {
-	case 0x01:
-		e.handleConnect(c, buf[:n])
-	case 0x03:
-		e.handleUDPAssociate(c, dstAddr, dstPort)
-	default:
-		c.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-	}
-}
-
-func (e *vpnEngine) handleConnect(c net.Conn, connectReq []byte) {
-	connID := e.connCount.Add(1)
-	
-	y, ok := e.sess.Get()
-	if !ok || y == nil {
-		// SMART PROXY FIX: Retry for a few seconds if session is transitioning (WiFi -> LTE)
-		for i := 0; i < 25; i++ {
-			select {
-			case <-e.ctx.Done():
-			case <-time.After(200 * time.Millisecond):
-				y, ok = e.sess.Get()
-			}
-			if ok && y != nil {
-				break
-			}
-		}
-	}
-
-	if !ok || y == nil {
-		c.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		return
-	}
-	s, err := y.OpenStream()
-	if err != nil {
-		logToApp("warn", fmt.Sprintf("[CONN#%d] yamux open: %v", connID, err))
-		e.sess.Down()
-		c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		return
-	}
-	defer s.Close()
-	c.SetDeadline(time.Time{})
-
-	// SOCKS5 greeting to remote
-	s.Write([]byte{0x05, 0x01, 0x00})
+	// Отправляем SOCKS5 connect поверх DataChannel -> Server -> remote
+	// Server на той стороне принимает SOCKS5 и дальше гоняет трафик
+	stream.Write([]byte{0x05, 0x01, 0x00})
 	vBuf := make([]byte, 2)
-	s.SetReadDeadline(time.Now().Add(10 * time.Second))
-	if _, err := io.ReadFull(s, vBuf); err != nil || vBuf[0] != 0x05 || vBuf[1] != 0x00 {
+	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, err := io.ReadFull(stream, vBuf); err != nil || vBuf[0] != 0x05 || vBuf[1] != 0x00 {
 		c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
 
-	s.Write(connectReq)
+	stream.Write(buf[:n])
 	respBuf := make([]byte, 256)
-	s.SetReadDeadline(time.Now().Add(10 * time.Second))
-	rn, err := s.Read(respBuf)
+	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
+	rn, err := stream.Read(respBuf)
 	if err != nil || rn < 2 {
 		c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
@@ -221,17 +180,19 @@ func (e *vpnEngine) handleConnect(c net.Conn, connectReq []byte) {
 		return
 	}
 
-	s.SetDeadline(time.Time{})
+	stream.SetDeadline(time.Time{})
+	c.SetDeadline(time.Time{})
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(s, c)
+		n, _ := io.Copy(stream, c)
 		e.txBytes.Add(n)
 	}()
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(c, s)
+		n, _ := io.Copy(c, stream)
 		e.rxBytes.Add(n)
 	}()
 	wg.Wait()
@@ -294,12 +255,11 @@ func (e *vpnEngine) handleUDPAssociate(tcpConn net.Conn, clientAddr string, clie
 			continue
 		}
 		dnsQuery := dataBuf[3+hdrLen : n]
-		
-		// STABILITY FIX: Use semaphore to limit goroutines and prevent OOM
+
 		e.dnsSem <- struct{}{}
 		go func(query []byte, dst string, dstP int, sender *net.UDPAddr) {
 			defer func() { <-e.dnsSem }()
-			resp, err := e.dnsOverTCPviaSocks5(query, dst, dstP)
+			resp, err := e.dnsOverTCPviaTunnel(query, dst, dstP)
 			if err != nil {
 				return
 			}
@@ -316,35 +276,30 @@ func (e *vpnEngine) handleUDPAssociate(tcpConn net.Conn, clientAddr string, clie
 	}
 }
 
-func (e *vpnEngine) dnsOverTCPviaSocks5(query []byte, dstIP string, dstPort int) ([]byte, error) {
-	y, ok := e.sess.Get()
-	if !ok || y == nil {
-		// SMART PROXY FIX: Retry for a few seconds if session is transitioning
+func (e *vpnEngine) dnsOverTCPviaTunnel(query []byte, dstIP string, dstPort int) ([]byte, error) {
+	stream, ok := e.sess.GetStream()
+	if !ok || stream == nil {
 		for i := 0; i < 25; i++ {
 			select {
 			case <-e.ctx.Done():
 			case <-time.After(200 * time.Millisecond):
-				y, ok = e.sess.Get()
+				stream, ok = e.sess.GetStream()
 			}
-			if ok && y != nil {
+			if ok && stream != nil {
 				break
 			}
 		}
 	}
 
-	if !ok || y == nil {
+	if !ok || stream == nil {
 		return nil, fmt.Errorf("no session")
 	}
-	s, err := y.OpenStream()
-	if err != nil {
-		return nil, fmt.Errorf("yamux: %v", err)
-	}
-	defer s.Close()
-	s.SetDeadline(time.Now().Add(10 * time.Second))
 
-	s.Write([]byte{0x05, 0x01, 0x00})
+	// Отправляем DNS через SOCKS5-over-DataChannel
+	stream.Write([]byte{0x05, 0x01, 0x00})
 	hdr := make([]byte, 2)
-	if _, err := io.ReadFull(s, hdr); err != nil || hdr[0] != 0x05 {
+	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, err := io.ReadFull(stream, hdr); err != nil || hdr[0] != 0x05 {
 		return nil, fmt.Errorf("vps greeting: %v", err)
 	}
 
@@ -355,10 +310,10 @@ func (e *vpnEngine) dnsOverTCPviaSocks5(query []byte, dstIP string, dstPort int)
 	connectReq := []byte{0x05, 0x01, 0x00, 0x01}
 	connectReq = append(connectReq, ip...)
 	connectReq = append(connectReq, byte(dstPort>>8), byte(dstPort))
-	s.Write(connectReq)
+	stream.Write(connectReq)
 
 	resp := make([]byte, 10)
-	if _, err := io.ReadFull(s, resp); err != nil {
+	if _, err := io.ReadFull(stream, resp); err != nil {
 		return nil, fmt.Errorf("vps connect: %v", err)
 	}
 	if resp[1] != 0x00 {
@@ -369,12 +324,12 @@ func (e *vpnEngine) dnsOverTCPviaSocks5(query []byte, dstIP string, dstPort int)
 	tcpBuf[0] = byte(len(query) >> 8)
 	tcpBuf[1] = byte(len(query))
 	copy(tcpBuf[2:], query)
-	if _, err := s.Write(tcpBuf); err != nil {
+	if _, err := stream.Write(tcpBuf); err != nil {
 		return nil, fmt.Errorf("dns write: %v", err)
 	}
 
 	lenBuf := make([]byte, 2)
-	if _, err := io.ReadFull(s, lenBuf); err != nil {
+	if _, err := io.ReadFull(stream, lenBuf); err != nil {
 		return nil, fmt.Errorf("dns read len: %v", err)
 	}
 	respLen := int(lenBuf[0])<<8 | int(lenBuf[1])
@@ -382,7 +337,7 @@ func (e *vpnEngine) dnsOverTCPviaSocks5(query []byte, dstIP string, dstPort int)
 		return nil, fmt.Errorf("dns resp too large: %d", respLen)
 	}
 	dnsResp := make([]byte, respLen)
-	if _, err := io.ReadFull(s, dnsResp); err != nil {
+	if _, err := io.ReadFull(stream, dnsResp); err != nil {
 		return nil, fmt.Errorf("dns read body: %v", err)
 	}
 	return dnsResp, nil

@@ -1,9 +1,11 @@
+// Прямая копия из olcrtc/internal/telemost/peer.go
+// websocket.DefaultDialer.Dial — БЕЗ кастомных диалеров.
 package core
 
 import (
 	"context"
 	"fmt"
-	"net"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,13 +15,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 )
-
-// Пул IP-адресов для goloom.strm.yandex.net
-var mediaIPs = []string{
-	"87.250.254.244",
-	"87.250.250.12",
-	"213.180.204.244",
-}
 
 type WebRTCPeer struct {
 	roomURL         string
@@ -36,6 +31,17 @@ type WebRTCPeer struct {
 	sendQueue       chan []byte
 	sendQueueClosed atomic.Bool
 	wg              sync.WaitGroup
+}
+
+func (p *WebRTCPeer) GetSendQueue() chan []byte {
+	return p.sendQueue
+}
+
+func (p *WebRTCPeer) GetBufferedAmount() uint64 {
+	if p.dc != nil {
+		return p.dc.BufferedAmount()
+	}
+	return 0
 }
 
 func NewWebRTCPeer(roomURL, name string, onData func([]byte)) (*WebRTCPeer, error) {
@@ -72,10 +78,18 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		return err
 	}
 
+	p.pcSub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		log.Printf("Subscriber PeerConnection state: %s", state.String())
+	})
+
 	p.pcPub, err = api.NewPeerConnection(config)
 	if err != nil {
 		return err
 	}
+
+	p.pcPub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		log.Printf("Publisher PeerConnection state: %s", state.String())
+	})
 
 	p.dc, err = p.pcPub.CreateDataChannel("olcrtc", nil)
 	if err != nil {
@@ -84,16 +98,28 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 
 	dcReady := make(chan struct{})
 	p.dc.OnOpen(func() {
-		getLog().Info("[RTC] DataChannel opened")
+		log.Println("DataChannel opened")
+
 		numWorkers := 4
 		for i := 0; i < numWorkers; i++ {
 			p.wg.Add(1)
-			go func(id int) {
+			go func(workerID int) {
 				defer p.wg.Done()
-				p.processSendQueue(id)
+				p.processSendQueue(workerID)
 			}(i)
 		}
+
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.monitorQueue()
+		}()
+
 		close(dcReady)
+	})
+
+	p.dc.OnClose(func() {
+		log.Println("DataChannel closed")
 	})
 
 	p.dc.OnMessage(func(msg webrtc.DataChannelMessage) {
@@ -103,7 +129,7 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	})
 
 	p.pcSub.OnDataChannel(func(dc *webrtc.DataChannel) {
-		getLog().Info(fmt.Sprintf("[RTC] Received DataChannel: %s", dc.Label()))
+		log.Printf("Received datachannel: %s", dc.Label())
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 			if p.onData != nil && len(msg.Data) > 0 {
 				p.onData(msg.Data)
@@ -111,43 +137,10 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		})
 	})
 
-	// Применяем FragDialer + IP Fallback для WebSocket-соединения в гипер-режиме
-	fd := &FragDialer{
-		Dialer: net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		},
-	}
-
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 15 * time.Second,
-		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, _ := net.SplitHostPort(addr)
-
-			// 1. Стандарт + Фрагментация
-			conn, err := fd.DialContext(ctx, "tcp4", addr)
-			if err == nil {
-				return conn, nil
-			}
-
-			// 2. Резервный пул IP + Фрагментация
-			if host == "goloom.strm.yandex.net" {
-				getLog().Warn(fmt.Sprintf("[RTC] DNS failed for %s, trying fallback IP + Fragmentation...", host))
-				for _, ip := range mediaIPs {
-					conn, err = fd.DialContext(ctx, "tcp4", net.JoinHostPort(ip, port))
-					if err == nil {
-						getLog().Info(fmt.Sprintf("[RTC] Connected to Media via IP + frag: %s", ip))
-						return conn, nil
-					}
-				}
-			}
-			return nil, err
-		},
-	}
-
-	ws, _, err := dialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
+	// Прямой вызов websocket.DefaultDialer — как в olcrtc
+	ws, _, err := websocket.DefaultDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
-		return fmt.Errorf("media ws Hyper-Dial error: %w", err)
+		return err
 	}
 	p.ws = ws
 
@@ -155,6 +148,7 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
 	})
+
 	ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 	p.wg.Add(1)
@@ -178,7 +172,7 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	select {
 	case <-dcReady:
 		return nil
-	case <-time.After(30 * time.Second):
+	case <-time.After(15 * time.Second):
 		return fmt.Errorf("datachannel timeout")
 	case <-ctx.Done():
 		return ctx.Err()
@@ -189,15 +183,28 @@ func (p *WebRTCPeer) Send(data []byte) error {
 	if p.dc == nil || p.dc.ReadyState() != webrtc.DataChannelStateOpen {
 		return fmt.Errorf("datachannel not ready")
 	}
+
 	if p.sendQueueClosed.Load() {
 		return fmt.Errorf("send queue closed")
 	}
+
 	select {
 	case p.sendQueue <- data:
 		return nil
 	case <-time.After(50 * time.Millisecond):
+		queueLen := len(p.sendQueue)
+		log.Printf("[SEND_QUEUE] Timeout! queue_len=%d, dropping packet size=%d", queueLen, len(data))
 		return fmt.Errorf("send queue timeout")
 	}
+}
+
+func (p *WebRTCPeer) CanSend() bool {
+	queueLen := len(p.sendQueue)
+	buffered := uint64(0)
+	if p.dc != nil {
+		buffered = p.dc.BufferedAmount()
+	}
+	return queueLen < 1000 && buffered < 3*1024*1024
 }
 
 func (p *WebRTCPeer) sendHello() error {
@@ -214,13 +221,13 @@ func (p *WebRTCPeer) sendHello() error {
 				"name": p.name,
 				"role": "SPEAKER",
 			},
-			"sendAudio":     false,
-			"sendVideo":     false,
-			"sendSharing":   false,
-			"participantId": p.conn.PeerID,
-			"roomId":        p.conn.RoomID,
-			"serviceName":   "telemost",
-			"credentials":   p.conn.Credentials,
+			"sendAudio":         false,
+			"sendVideo":         false,
+			"sendSharing":       false,
+			"participantId":     p.conn.PeerID,
+			"roomId":            p.conn.RoomID,
+			"serviceName":       "telemost",
+			"credentials":       p.conn.Credentials,
 			"capabilitiesOffer": map[string]interface{}{
 				"offerAnswerMode":        []string{"SEPARATE"},
 				"initialSubscriberOffer": []string{"ON_HELLO"},
@@ -239,6 +246,7 @@ func (p *WebRTCPeer) sendHello() error {
 			"disableSubscriber":   false,
 		},
 	}
+
 	p.wsMu.Lock()
 	defer p.wsMu.Unlock()
 	return p.ws.WriteJSON(hello)
@@ -246,11 +254,14 @@ func (p *WebRTCPeer) sendHello() error {
 
 func (p *WebRTCPeer) handleSignaling() {
 	pubSent := false
+
 	for {
 		var msg map[string]interface{}
 		if err := p.ws.ReadJSON(&msg); err != nil {
+			log.Printf("WS read error: %v", err)
 			return
 		}
+
 		p.wsMu.Lock()
 		if p.ws != nil {
 			p.ws.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -262,16 +273,20 @@ func (p *WebRTCPeer) handleSignaling() {
 		if _, ok := msg["serverHello"]; ok {
 			p.sendAck(uid)
 		}
+
 		if _, ok := msg["updateDescription"]; ok {
 			p.sendAck(uid)
 		}
+
 		if _, ok := msg["vadActivity"]; ok {
 			p.sendAck(uid)
 		}
+
 		if _, ok := msg["ping"]; ok {
 			p.sendPong(uid)
 			continue
 		}
+
 		if _, ok := msg["pong"]; ok {
 			p.sendAck(uid)
 			continue
@@ -281,12 +296,24 @@ func (p *WebRTCPeer) handleSignaling() {
 			sdp, _ := offer["sdp"].(string)
 			pcSeq, _ := offer["pcSeq"].(float64)
 
-			p.pcSub.SetRemoteDescription(webrtc.SessionDescription{
+			if err := p.pcSub.SetRemoteDescription(webrtc.SessionDescription{
 				Type: webrtc.SDPTypeOffer,
 				SDP:  sdp,
-			})
-			answer, _ := p.pcSub.CreateAnswer(nil)
-			p.pcSub.SetLocalDescription(answer)
+			}); err != nil {
+				log.Printf("SetRemoteDescription error: %v", err)
+				continue
+			}
+
+			answer, err := p.pcSub.CreateAnswer(nil)
+			if err != nil {
+				log.Printf("CreateAnswer error: %v", err)
+				continue
+			}
+
+			if err := p.pcSub.SetLocalDescription(answer); err != nil {
+				log.Printf("SetLocalDescription error: %v", err)
+				continue
+			}
 
 			p.wsMu.Lock()
 			p.ws.WriteJSON(map[string]interface{}{
@@ -297,12 +324,21 @@ func (p *WebRTCPeer) handleSignaling() {
 				},
 			})
 			p.wsMu.Unlock()
-			p.sendAck(uid)
 
+			p.sendAck(uid)
 			time.Sleep(300 * time.Millisecond)
 
-			pubOffer, _ := p.pcPub.CreateOffer(nil)
-			p.pcPub.SetLocalDescription(pubOffer)
+			pubOffer, err := p.pcPub.CreateOffer(nil)
+			if err != nil {
+				log.Printf("CreateOffer error: %v", err)
+				continue
+			}
+
+			if err := p.pcPub.SetLocalDescription(pubOffer); err != nil {
+				log.Printf("SetLocalDescription error: %v", err)
+				continue
+			}
+
 			p.wsMu.Lock()
 			p.ws.WriteJSON(map[string]interface{}{
 				"uid": uuid.New().String(),
@@ -312,15 +348,20 @@ func (p *WebRTCPeer) handleSignaling() {
 				},
 			})
 			p.wsMu.Unlock()
+
 			pubSent = true
 		}
 
 		if answer, ok := msg["publisherSdpAnswer"].(map[string]interface{}); ok {
 			sdp, _ := answer["sdp"].(string)
-			p.pcPub.SetRemoteDescription(webrtc.SessionDescription{
+
+			if err := p.pcPub.SetRemoteDescription(webrtc.SessionDescription{
 				Type: webrtc.SDPTypeAnswer,
 				SDP:  sdp,
-			})
+			}); err != nil {
+				log.Printf("SetRemoteDescription error: %v", err)
+			}
+
 			p.sendAck(uid)
 		}
 
@@ -336,7 +377,8 @@ func (p *WebRTCPeer) handleICE(cand map[string]interface{}) {
 	sdpMid, _ := cand["sdpMid"].(string)
 	sdpMLineIndex, _ := cand["sdpMlineIndex"].(float64)
 
-	if !strings.Contains(candStr, "candidate") {
+	parts := strings.Fields(candStr)
+	if len(parts) < 8 {
 		return
 	}
 
@@ -356,15 +398,21 @@ func (p *WebRTCPeer) handleICE(cand map[string]interface{}) {
 func (p *WebRTCPeer) sendAck(uid string) {
 	p.wsMu.Lock()
 	defer p.wsMu.Unlock()
+
 	p.ws.WriteJSON(map[string]interface{}{
 		"uid": uid,
-		"ack": map[string]interface{}{"status": map[string]interface{}{"code": "OK"}},
+		"ack": map[string]interface{}{
+			"status": map[string]interface{}{
+				"code": "OK",
+			},
+		},
 	})
 }
 
 func (p *WebRTCPeer) sendPong(uid string) {
 	p.wsMu.Lock()
 	defer p.wsMu.Unlock()
+
 	p.ws.WriteJSON(map[string]interface{}{
 		"uid":  uid,
 		"pong": map[string]interface{}{},
@@ -376,6 +424,7 @@ func (p *WebRTCPeer) setupICEHandlers() {
 		if c == nil {
 			return
 		}
+
 		init := c.ToJSON()
 		p.wsMu.Lock()
 		p.ws.WriteJSON(map[string]interface{}{
@@ -395,6 +444,7 @@ func (p *WebRTCPeer) setupICEHandlers() {
 		if c == nil {
 			return
 		}
+
 		init := c.ToJSON()
 		p.wsMu.Lock()
 		p.ws.WriteJSON(map[string]interface{}{
@@ -412,27 +462,50 @@ func (p *WebRTCPeer) setupICEHandlers() {
 }
 
 func (p *WebRTCPeer) Close() error {
+	log.Println("Closing peer connection...")
+
 	p.sendQueueClosed.Store(true)
+
 	select {
 	case <-p.closeCh:
 	default:
 		close(p.closeCh)
 	}
-	if p.ws != nil {
-		p.ws.Close()
+
+	done := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
 	}
-	if p.pcSub != nil {
-		p.pcSub.Close()
+
+	if p.dc != nil {
+		p.dc.Close()
 	}
 	if p.pcPub != nil {
 		p.pcPub.Close()
 	}
+	if p.pcSub != nil {
+		p.pcSub.Close()
+	}
+	if p.ws != nil {
+		p.wsMu.Lock()
+		p.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		p.ws.Close()
+		p.wsMu.Unlock()
+	}
+
 	return nil
 }
 
 func (p *WebRTCPeer) keepAlive() {
 	wsPingTicker := time.NewTicker(30 * time.Second)
 	defer wsPingTicker.Stop()
+
 	appPingTicker := time.NewTicker(5 * time.Second)
 	defer appPingTicker.Stop()
 
@@ -441,18 +514,28 @@ func (p *WebRTCPeer) keepAlive() {
 		case <-wsPingTicker.C:
 			p.wsMu.Lock()
 			if p.ws != nil {
-				p.ws.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second))
+				if err := p.ws.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+					log.Printf("WS Ping error: %v", err)
+					p.wsMu.Unlock()
+					return
+				}
 			}
 			p.wsMu.Unlock()
 		case <-appPingTicker.C:
 			p.wsMu.Lock()
 			if p.ws != nil {
-				p.ws.WriteJSON(map[string]interface{}{
+				if err := p.ws.WriteJSON(map[string]interface{}{
 					"uid":  uuid.New().String(),
 					"ping": map[string]interface{}{},
-				})
+				}); err != nil {
+					log.Printf("App Ping error: %v", err)
+					p.wsMu.Unlock()
+					return
+				}
 			}
 			p.wsMu.Unlock()
+		case <-p.keepAliveCh:
+			return
 		case <-p.closeCh:
 			return
 		}
@@ -466,11 +549,46 @@ func (p *WebRTCPeer) processSendQueue(workerID int) {
 			if p.dc == nil || p.dc.ReadyState() != webrtc.DataChannelStateOpen {
 				continue
 			}
-			// Wait if buffer is too large
+
+			start := time.Now()
+
 			for p.dc.BufferedAmount() > 4*1024*1024 {
 				time.Sleep(10 * time.Millisecond)
+				if time.Since(start) > 10*time.Second {
+					log.Printf("[WORKER-%d] Buffer wait timeout, dropping packet size=%d", workerID, len(data))
+					break
+				}
 			}
-			p.dc.Send(data)
+
+			if time.Since(start) > 10*time.Second {
+				continue
+			}
+
+			if err := p.dc.Send(data); err != nil {
+				log.Printf("[WORKER-%d] Send error: %v", workerID, err)
+			}
+
+		case <-p.closeCh:
+			return
+		}
+	}
+}
+
+func (p *WebRTCPeer) monitorQueue() {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			queueLen := len(p.sendQueue)
+			buffered := uint64(0)
+			if p.dc != nil {
+				buffered = p.dc.BufferedAmount()
+			}
+			if queueLen > 800 || buffered > 3*1024*1024 {
+				log.Printf("[QUEUE_MONITOR] queue_len=%d dc_buffered=%d MB", queueLen, buffered/(1024*1024))
+			}
 		case <-p.closeCh:
 			return
 		}

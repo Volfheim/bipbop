@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// DCStream wraps webrtc.DataChannel to act exactly like standard net.Conn.
-// It fragments outgoing data to bypass Yandex 8KB message size limit.
+// DCStream wraps WebRTCPeer DataChannel as net.Conn.
+// Фрагментация 7168 байт — как в olcrtc mux.go (const chunkSize = 7168).
 type DCStream struct {
 	peer       *WebRTCPeer
 	readBuf    bytes.Buffer
@@ -76,9 +76,8 @@ func (s *DCStream) Write(b []byte) (n int, err error) {
 		return 0, errors.New("stream closed")
 	}
 
-	// Yandex Telemost silently drops packets > 8KB.
-	// Fragment anything larger into 8000 byte chunks.
-	const chunkSize = 8000
+	// olcrtc mux.go uses chunkSize = 7168
+	const chunkSize = 7168
 	total := len(b)
 	for i := 0; i < total; i += chunkSize {
 		end := i + chunkSize
