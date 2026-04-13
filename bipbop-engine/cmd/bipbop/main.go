@@ -304,7 +304,7 @@ func runClient(ctx context.Context, peer, pw string) {
 	sess := &core.Session{}
 	rch := make(chan struct{}, 1)
 
-	ym, cl, err := core.Establish(peer, pw, false)
+	mux, cl, err := core.Establish(nil, *smartKey, "CLI", false, nil)
 	if err != nil {
 		die("Tunnel: %v", err)
 	}

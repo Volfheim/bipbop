@@ -52,7 +52,7 @@ func (e *vpnEngine) run() error {
 
 	// 2. First-time Establishment
 	logToApp("info", "[ENG] Establishing initial tunnel...")
-	mux, cl, err := core.Establish(nil, e.peer, "Guest", false)
+	mux, cl, err := core.Establish(nil, e.peer, "Guest", false, func() { e.sess.Down() })
 	if err != nil {
 		logToApp("error", fmt.Sprintf("[ENG] Initial establish failed: %v", err))
 		emit("error")
@@ -86,7 +86,7 @@ func (e *vpnEngine) run() error {
 			emit("reconnecting")
 
 			for {
-				m, cl, err := core.Establish(nil, e.peer, "Guest", false)
+				m, cl, err := core.Establish(nil, e.peer, "Guest", false, func() { e.sess.Down() })
 				if err != nil {
 					logToApp("error", fmt.Sprintf("[ENG] Redial failed: %v, retrying...", err))
 					select {

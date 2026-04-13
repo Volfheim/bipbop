@@ -61,7 +61,7 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	key := core.EncodeSmartKey(listenAddr, password)
 
-	mux, cl, err := core.Establish(nil, key, "Server", true)
+	mux, cl, err := core.Establish(nil, key, "Server", true, func() { sess.Down() })
 	if err == nil {
 		sess.Set(mux, cl)
 	}
@@ -96,7 +96,7 @@ func runServer(cmd *cobra.Command, args []string) {
 				bo := 2 * time.Second
 				for a := 1; ; a++ {
 					fmt.Printf("[INFO] Reconnecting (#%d)...\n", a)
-					m, c, e := core.Establish(nil, key, "Server", true)
+					m, c, e := core.Establish(nil, key, "Server", true, func() { sess.Down() })
 					if e == nil {
 						sess.Set(m, c)
 						fmt.Println("[INFO] Connection restored!")

@@ -31,6 +31,7 @@ type WebRTCPeer struct {
 	sendQueue       chan []byte
 	sendQueueClosed atomic.Bool
 	wg              sync.WaitGroup
+	OnDisconnected  func()
 }
 
 func (p *WebRTCPeer) GetSendQueue() chan []byte {
@@ -80,6 +81,11 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 
 	p.pcSub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		log.Printf("Subscriber PeerConnection state: %s", state.String())
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
+			if p.OnDisconnected != nil {
+				go p.OnDisconnected()
+			}
+		}
 	})
 
 	p.pcPub, err = api.NewPeerConnection(config)
@@ -89,6 +95,11 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 
 	p.pcPub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		log.Printf("Publisher PeerConnection state: %s", state.String())
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
+			if p.OnDisconnected != nil {
+				go p.OnDisconnected()
+			}
+		}
 	})
 
 	p.dc, err = p.pcPub.CreateDataChannel("olcrtc", nil)
@@ -120,6 +131,9 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 
 	p.dc.OnClose(func() {
 		log.Println("DataChannel closed")
+		if p.OnDisconnected != nil {
+			go p.OnDisconnected()
+		}
 	})
 
 	p.dc.OnMessage(func(msg webrtc.DataChannelMessage) {

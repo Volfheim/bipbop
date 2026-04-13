@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	Version     = "4.6-ULTRA-STABLE"
+	Version     = "4.7-FINAL"
 	DefPort     = "8443"
 	MaxBackoff  = 60 * time.Second
 	HealthEvery = 15 * time.Second
@@ -102,7 +102,7 @@ func SmartKeyServerIP(k string) (string, error) {
 
 // --- Establish tunnel ---
 
-func Establish(cache *CredsCache, key, name string, isServer bool) (*Multiplexer, io.Closer, error) {
+func Establish(cache *CredsCache, key, name string, isServer bool, onDisconnect func()) (*Multiplexer, io.Closer, error) {
 	log := getLog()
 	log.Info(fmt.Sprintf("[ENG] Establishing tunnel... (Version: %s)", Version))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -131,6 +131,7 @@ func Establish(cache *CredsCache, key, name string, isServer bool) (*Multiplexer
 
 	// Привязываем обработку данных из DataChannel к мультиплексору
 	peer.onData = mux.HandleFrame
+	peer.OnDisconnected = onDisconnect
 
 	log.Info(fmt.Sprintf("[ENG] Connecting to Telemost Room... (%s)", roomURL))
 
