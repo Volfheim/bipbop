@@ -325,7 +325,7 @@ type MuxConn struct {
 }
 
 func NewMuxConn(sid uint16, mux *Multiplexer) *MuxConn {
-	return &MuxConn{sid: sid, mux: mux, lAddr: AddrMock{"local-mux"}, rAddr: AddrMock{"remote-mux"}}
+	return &MuxConn{sid: sid, mux: mux}
 }
 
 func (c *MuxConn) Read(b []byte) (int, error) {
@@ -358,6 +358,8 @@ func (c *MuxConn) Close() error {
 	c.mux.CloseStream(c.sid)
 	c.mux.CleanupStream(c.sid)
 	return nil
+}
+
 func (c *MuxConn) LocalAddr() net.Addr                { return AddrMock{addr: "mux-local"} }
 func (c *MuxConn) RemoteAddr() net.Addr               { return AddrMock{addr: "mux-remote"} }
 func (c *MuxConn) SetDeadline(t time.Time) error      { return nil }
