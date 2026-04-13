@@ -126,8 +126,8 @@ func (e *vpnEngine) serveSocks5(ln net.Listener) {
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
-		defer c.Close()
-		e.handleSocksClient(c)
+		defer conn.Close()
+		e.handleSocksClient(conn)
 	}()
 }
 
