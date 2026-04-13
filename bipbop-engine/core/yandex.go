@@ -8,9 +8,17 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+var signalingClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&SignalingDialer{}).DialContext,
+	},
+	Timeout: 30 * time.Second,
+}
 
 const apiBase = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"
 
@@ -46,7 +54,7 @@ func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
 	req.Header.Set("Origin", "https://telemost.yandex.ru")
 	req.Header.Set("Referer", "https://telemost.yandex.ru/")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := signalingClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

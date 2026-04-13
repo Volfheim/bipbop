@@ -137,8 +137,12 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		})
 	})
 
-	// Прямой вызов websocket.DefaultDialer — как в olcrtc
-	ws, _, err := websocket.DefaultDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
+	// Используем кастомный диалер для обхода глушилок DNS
+	wsDialer := websocket.Dialer{
+		NetDialContext: (&SignalingDialer{}).DialContext,
+		HandshakeTimeout: 30 * time.Second,
+	}
+	ws, _, err := wsDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
 		return err
 	}
