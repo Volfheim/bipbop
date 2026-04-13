@@ -17,7 +17,7 @@ var signalingClient = &http.Client{
 	Transport: &http.Transport{
 		DialContext: (&SignalingDialer{}).DialContext,
 	},
-	Timeout: 30 * time.Second,
+	Timeout: 60 * time.Second,
 }
 
 const apiBase = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"

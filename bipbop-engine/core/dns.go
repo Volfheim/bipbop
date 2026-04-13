@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"time"
 )
 
 // SignalingHosts - Кастомная мапа для обхода блокировок DNS
@@ -26,27 +25,60 @@ func (d *SignalingDialer) DialContext(ctx context.Context, network, addr string)
 		return d.Dialer.DialContext(ctx, network, addr)
 	}
 
-	// 1. Пытаемся зарезолвить через системный DNS (с коротким таймаутом)
-	resolveCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	ips, err := net.DefaultResolver.LookupIP(resolveCtx, "ip4", host)
-	cancel()
-
-	if err == nil && len(ips) > 0 {
+	staticIPs, isSignaling := SignalingHosts[host]
+	if !isSignaling {
 		return d.Dialer.DialContext(ctx, network, addr)
 	}
 
-	// 2. Если DNS упал (i/o timeout), пробуем хардкод
-	if staticIPs, ok := SignalingHosts[host]; ok {
-		fmt.Printf("[ANTI-JAM] DNS Bypass for %s triggered (using static IPs)\n", host)
-		for _, ip := range staticIPs {
-			dialAddr := net.JoinHostPort(ip, port)
-			conn, err := d.Dialer.DialContext(ctx, network, dialAddr)
-			if err == nil {
-				return conn, nil
+	result := make(chan net.Conn, 1)
+	errs := make(chan error, len(staticIPs)+1)
+	fastCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// 1. Попытка через системный DNS (в фоне)
+	go func() {
+		conn, err := d.Dialer.DialContext(fastCtx, network, addr)
+		if err == nil {
+			select {
+			case result <- conn:
+			default:
+				conn.Close()
 			}
+		} else {
+			errs <- err
+		}
+	}()
+
+	// 2. Попытки через хардкод IP (параллельно)
+	for _, ip := range staticIPs {
+		go func(targetIP string) {
+			dialAddr := net.JoinHostPort(targetIP, port)
+			conn, err := d.Dialer.DialContext(fastCtx, network, dialAddr)
+			if err == nil {
+				select {
+				case result <- conn:
+					fmt.Printf("[ANTI-JAM] Parallel dial WINNER: %s (static)\n", targetIP)
+				default:
+					conn.Close()
+				}
+			} else {
+				errs <- err
+			}
+		}(ip)
+	}
+
+	// Ждем первого успеха или пока всё не упадет
+	totalAttempts := len(staticIPs) + 1
+	for i := 0; i < totalAttempts; i++ {
+		select {
+		case conn := <-result:
+			return conn, nil
+		case <-errs:
+			// продолжаем ждать
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
 
-	// 3. Если ничего не помогло, возвращаем исходную ошибку
-	return d.Dialer.DialContext(ctx, network, addr)
+	return nil, fmt.Errorf("all dialing attempts failed for %s", addr)
 }

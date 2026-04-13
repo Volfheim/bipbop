@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	Version     = "4.7-FINAL"
+	Version     = "4.8-ULTRA-BOOST"
 	DefPort     = "8443"
 	MaxBackoff  = 60 * time.Second
 	HealthEvery = 15 * time.Second
@@ -105,7 +105,7 @@ func SmartKeyServerIP(k string) (string, error) {
 func Establish(cache *CredsCache, key, name string, isServer bool, onDisconnect func()) (*Multiplexer, io.Closer, error) {
 	log := getLog()
 	log.Info(fmt.Sprintf("[ENG] Establishing tunnel... (Version: %s)", Version))
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	roomURL, _, err := ParseSmartKey(key)
