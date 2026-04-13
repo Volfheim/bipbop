@@ -3,7 +3,9 @@ package core
 import (
 	"encoding/binary"
 	"fmt"
+	"net"
 	"sync"
+	"time"
 )
 
 // Stream представляет собой отдельный TCP-поток внутри DataChannel
