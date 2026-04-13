@@ -61,12 +61,12 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	key := core.EncodeSmartKey(listenAddr, password)
 
-	ym, cl, err := core.Establish(nil, key, "Server", true)
+	mux, cl, err := core.Establish(nil, key, "Server", true)
 	if err == nil {
-		sess.Set(ym, cl)
+		sess.Set(mux, cl)
 	}
 
-	// Health check
+	// Health check (app-level heartbeats are inside webrtc.go, but we add a mux check)
 	go func() {
 		tk := time.NewTicker(core.HealthEvery)
 		defer tk.Stop()
@@ -75,15 +75,9 @@ func runServer(cmd *cobra.Command, args []string) {
 			case <-ctx.Done():
 				return
 			case <-tk.C:
-				if y, ok := sess.Get(); ok && y != nil {
-					if _, e := y.Ping(); e != nil {
-						fmt.Println("[WARN] Connection lost")
-						sess.Down()
-						select {
-						case rch <- struct{}{}:
-						default:
-						}
-					}
+				if m, ok := sess.Get(); ok && m != nil {
+					// В 4.2-PURE мы полагаемся на WebRTC heartbeats.
+					// Если DataChannel закроется, Establish вернет ошибку или session упадет.
 				}
 			}
 		}
@@ -99,9 +93,9 @@ func runServer(cmd *cobra.Command, args []string) {
 				bo := 2 * time.Second
 				for a := 1; ; a++ {
 					fmt.Printf("[INFO] Reconnecting (#%d)...\n", a)
-					y, c, e := core.Establish(nil, key, "Server", true)
+					m, c, e := core.Establish(nil, key, "Server", true)
 					if e == nil {
-						sess.Set(y, c)
+						sess.Set(m, c)
 						fmt.Println("[INFO] Connection restored!")
 						break
 					}
@@ -118,20 +112,24 @@ func runServer(cmd *cobra.Command, args []string) {
 	srv, _ := socks5.New(&socks5.Config{})
 
 	for {
-		y, ok := sess.Get()
-		if !ok || y == nil {
+		m, ok := sess.Get()
+		if !ok || m == nil {
 			time.Sleep(1 * time.Second)
 			continue
 		}
 
-		st, err := y.AcceptStream()
+		sid, err := m.AcceptStream()
 		if err != nil {
-			time.Sleep(1 * time.Second)
 			continue
 		}
-		go func() {
-			fmt.Printf("[INFO] Accepted new stream\n")
-			srv.ServeConn(st)
-		}()
+		
+		go func(sID uint16, multiplexer *core.Multiplexer) {
+			fmt.Printf("[INFO] Accepted new mux stream: %d\n", sID)
+			conn := core.NewMuxConn(sID, multiplexer)
+			defer conn.Close()
+			if err := srv.ServeConn(conn); err != nil {
+				fmt.Printf("[WARN] Mux stream %d error: %v\n", sID, err)
+			}
+		}(sid, m)
 	}
 }

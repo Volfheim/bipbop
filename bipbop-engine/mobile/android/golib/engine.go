@@ -25,7 +25,7 @@ type vpnEngine struct {
 	connCount atomic.Int64
 	txBytes   atomic.Int64
 	rxBytes   atomic.Int64
-	dnsSem    chan struct{} // STABILITY FIX: Limit concurrent DNS queries to prevent OOM
+	dnsSem    chan struct{}
 }
 
 func (e *vpnEngine) run() error {
@@ -40,39 +40,19 @@ func (e *vpnEngine) run() error {
 	defer socksLn.Close()
 	go e.serveSocks5(socksLn)
 
-	// 2. Start Health Check (triggers sess.Down -> sess.Wait)
-	go func() {
-		tk := time.NewTicker(core.HealthEvery)
-		defer tk.Stop()
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-tk.C:
-				if y, ok := e.sess.Get(); ok && y != nil {
-					if _, err := y.Ping(); err != nil {
-						logToApp("warn", "[ENG] Link health check failed")
-						e.sess.Down()
-					}
-				}
-			}
-		}
-	}()
-
-	// 3. First-time Establishment (SIGNALLING PHASE)
-	// We MUST do this BEFORE starting tun2socks to avoid DNS deadlock on cold start.
+	// 2. First-time Establishment
 	logToApp("info", "[ENG] Establishing initial tunnel...")
-	ym, cl, err := core.Establish(nil, e.peer, "Guest", false)
+	mux, cl, err := core.Establish(nil, e.peer, "Guest", false)
 	if err != nil {
 		logToApp("error", fmt.Sprintf("[ENG] Initial establish failed: %v", err))
 		emit("error")
 		return err
 	}
-	e.sess.Set(ym, cl)
+	e.sess.Set(mux, cl)
 	emit("connected")
 	logToApp("info", "[ENG] Initial tunnel established!")
 
-	// 4. Start tun2socks only if tunFd != -1 
+	// 3. Start tun2socks only if tunFd != -1
 	if e.tunFd != -1 {
 		t2s, err := newTun2Socks(e.tunFd, socksAddr, e.mtu, e.dns)
 		if err != nil {
@@ -80,11 +60,9 @@ func (e *vpnEngine) run() error {
 			return err
 		}
 		defer t2s.Close()
-	} else {
-		logToApp("info", "[ENG] Обычный SOCKS5 режим (без захвата VPN-слота)")
 	}
 
-	// 5. Main Reconnect Loop
+	// 4. Main Reconnect Loop
 	for {
 		select {
 		case <-e.ctx.Done():
@@ -93,9 +71,8 @@ func (e *vpnEngine) run() error {
 			logToApp("warn", "[ENG] Connection lost - redialing...")
 			emit("reconnecting")
 
-			// Redial logic
 			for {
-				ym, cl, err := core.Establish(nil, e.peer, "Guest", false)
+				m, cl, err := core.Establish(nil, e.peer, "Guest", false)
 				if err != nil {
 					logToApp("error", fmt.Sprintf("[ENG] Redial failed: %v, retrying...", err))
 					select {
@@ -105,7 +82,7 @@ func (e *vpnEngine) run() error {
 						continue
 					}
 				}
-				e.sess.Set(ym, cl)
+				e.sess.Set(m, cl)
 				emit("connected")
 				logToApp("info", "[ENG] Re-established!")
 				break
@@ -115,12 +92,9 @@ func (e *vpnEngine) run() error {
 }
 
 func (e *vpnEngine) stop() {
-	logToApp("info", "[ENG] stop() requested")
 	e.cancel()
 	e.sess.Stop()
 }
-
-// --- SOCKS5 proxy (for tun2socks) ---
 
 func (e *vpnEngine) serveSocks5(ln net.Listener) {
 	go func() { <-e.ctx.Done(); ln.Close() }()
@@ -142,6 +116,32 @@ func (e *vpnEngine) handleSocks5(c net.Conn) {
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(60 * time.Second))
 
+	mux, ok := e.sess.Get()
+	if !ok || mux == nil {
+		for i := 0; i < 25; i++ {
+			select {
+			case <-e.ctx.Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+				mux, ok = e.sess.Get()
+			}
+			if ok && mux != nil {
+				break
+			}
+		}
+	}
+
+	if !ok || mux == nil {
+		c.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
+
+	// Открываем стрим через мультиплексор olcrtc
+	sid := mux.OpenStream()
+	s := core.NewMuxConn(sid, mux)
+	defer s.Close()
+
+	// Handshake
 	buf := make([]byte, 258)
 	n, err := c.Read(buf)
 	if err != nil || n < 2 || buf[0] != 0x05 {
@@ -157,49 +157,17 @@ func (e *vpnEngine) handleSocks5(c net.Conn) {
 	cmd := buf[1]
 	dstAddr, dstPort := parseSocks5Addr(buf[3:n])
 
-	switch cmd {
-	case 0x01:
-		e.handleConnect(c, buf[:n])
-	case 0x03:
+	if cmd == 0x03 {
 		e.handleUDPAssociate(c, dstAddr, dstPort)
-	default:
+		return
+	}
+
+	if cmd != 0x01 {
 		c.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-	}
-}
-
-func (e *vpnEngine) handleConnect(c net.Conn, connectReq []byte) {
-	connID := e.connCount.Add(1)
-	
-	y, ok := e.sess.Get()
-	if !ok || y == nil {
-		// SMART PROXY FIX: Retry for a few seconds if session is transitioning (WiFi -> LTE)
-		for i := 0; i < 25; i++ {
-			select {
-			case <-e.ctx.Done():
-			case <-time.After(200 * time.Millisecond):
-				y, ok = e.sess.Get()
-			}
-			if ok && y != nil {
-				break
-			}
-		}
-	}
-
-	if !ok || y == nil {
-		c.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
-	s, err := y.OpenStream()
-	if err != nil {
-		logToApp("warn", fmt.Sprintf("[CONN#%d] yamux open: %v", connID, err))
-		e.sess.Down()
-		c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		return
-	}
-	defer s.Close()
-	c.SetDeadline(time.Time{})
 
-	// SOCKS5 greeting to remote
+	// ConnectReq to remote via Mux
 	s.Write([]byte{0x05, 0x01, 0x00})
 	vBuf := make([]byte, 2)
 	s.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -208,7 +176,7 @@ func (e *vpnEngine) handleConnect(c net.Conn, connectReq []byte) {
 		return
 	}
 
-	s.Write(connectReq)
+	s.Write(buf[:n])
 	respBuf := make([]byte, 256)
 	s.SetReadDeadline(time.Now().Add(10 * time.Second))
 	rn, err := s.Read(respBuf)
@@ -222,6 +190,8 @@ func (e *vpnEngine) handleConnect(c net.Conn, connectReq []byte) {
 	}
 
 	s.SetDeadline(time.Time{})
+	c.SetDeadline(time.Time{})
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -294,12 +264,11 @@ func (e *vpnEngine) handleUDPAssociate(tcpConn net.Conn, clientAddr string, clie
 			continue
 		}
 		dnsQuery := dataBuf[3+hdrLen : n]
-		
-		// STABILITY FIX: Use semaphore to limit goroutines and prevent OOM
+
 		e.dnsSem <- struct{}{}
 		go func(query []byte, dst string, dstP int, sender *net.UDPAddr) {
 			defer func() { <-e.dnsSem }()
-			resp, err := e.dnsOverTCPviaSocks5(query, dst, dstP)
+			resp, err := e.dnsOverTCPviaTunnel(query, dst, dstP)
 			if err != nil {
 				return
 			}
@@ -316,30 +285,29 @@ func (e *vpnEngine) handleUDPAssociate(tcpConn net.Conn, clientAddr string, clie
 	}
 }
 
-func (e *vpnEngine) dnsOverTCPviaSocks5(query []byte, dstIP string, dstPort int) ([]byte, error) {
-	y, ok := e.sess.Get()
-	if !ok || y == nil {
-		// SMART PROXY FIX: Retry for a few seconds if session is transitioning
+func (e *vpnEngine) dnsOverTCPviaTunnel(query []byte, dstIP string, dstPort int) ([]byte, error) {
+	mux, ok := e.sess.Get()
+	if !ok || mux == nil {
 		for i := 0; i < 25; i++ {
 			select {
 			case <-e.ctx.Done():
 			case <-time.After(200 * time.Millisecond):
-				y, ok = e.sess.Get()
+				mux, ok = e.sess.Get()
 			}
-			if ok && y != nil {
+			if ok && mux != nil {
 				break
 			}
 		}
 	}
 
-	if !ok || y == nil {
+	if !ok || mux == nil {
 		return nil, fmt.Errorf("no session")
 	}
-	s, err := y.OpenStream()
-	if err != nil {
-		return nil, fmt.Errorf("yamux: %v", err)
-	}
+
+	sid := mux.OpenStream()
+	s := core.NewMuxConn(sid, mux)
 	defer s.Close()
+
 	s.SetDeadline(time.Now().Add(10 * time.Second))
 
 	s.Write([]byte{0x05, 0x01, 0x00})
@@ -387,8 +355,6 @@ func (e *vpnEngine) dnsOverTCPviaSocks5(query []byte, dstIP string, dstPort int)
 	}
 	return dnsResp, nil
 }
-
-// --- SOCKS5 address parsers ---
 
 func parseSocks5Addr(b []byte) (string, int) {
 	if len(b) < 2 {

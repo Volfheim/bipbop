@@ -191,7 +191,7 @@ func (p *WebRTCPeer) Send(data []byte) error {
 	select {
 	case p.sendQueue <- data:
 		return nil
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(200 * time.Millisecond):
 		queueLen := len(p.sendQueue)
 		log.Printf("[SEND_QUEUE] Timeout! queue_len=%d, dropping packet size=%d", queueLen, len(data))
 		return fmt.Errorf("send queue timeout")
@@ -554,13 +554,13 @@ func (p *WebRTCPeer) processSendQueue(workerID int) {
 
 			for p.dc.BufferedAmount() > 4*1024*1024 {
 				time.Sleep(10 * time.Millisecond)
-				if time.Since(start) > 10*time.Second {
+				if time.Since(start) > 30*time.Second {
 					log.Printf("[WORKER-%d] Buffer wait timeout, dropping packet size=%d", workerID, len(data))
 					break
 				}
 			}
 
-			if time.Since(start) > 10*time.Second {
+			if time.Since(start) > 30*time.Second {
 				continue
 			}
 

@@ -33,8 +33,8 @@ print_banner() {
     echo " \ \_/ / (_) | | | | | | |  __/ | | | | | |"
     echo "  \___/ \___/|_|_| |_| |_|\___|_|_| |_| |_|"
     echo "                                           "
-    echo "        BIP-BOP Server Manager v4.0         "
-    echo -e "${YELLOW}        Version: 4.0-OLCRTC${NC}"
+    echo "        BIP-BOP Server Manager v4.2         "
+    echo -e "${YELLOW}        Version: 4.2-PURE${NC}"
     echo -e "${NC}================================================="
 }
 
@@ -63,7 +63,7 @@ install_server() {
 
     echo -e "${CYAN}>>> Загрузка бинарника...${NC}"
     rm -f "$INSTALL_DIR/$BIN_NAME"
-    curl -sL "https://raw.githubusercontent.com/$GITHUB_REPO/main/bipbop-server/volfheim-linux-amd64" -o "$INSTALL_DIR/$BIN_NAME"
+    curl -sL "https://raw.githubusercontent.com/$GITHUB_REPO/main/bipbop-server/volfheim-linux-amd64?v=$(date +%s)" -o "$INSTALL_DIR/$BIN_NAME"
     chmod +x "$INSTALL_DIR/$BIN_NAME"
 
     cat <<EOF > /etc/systemd/system/$SVC_NAME
