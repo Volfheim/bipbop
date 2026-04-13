@@ -358,11 +358,6 @@ func (c *MuxConn) Close() error {
 	c.mux.CloseStream(c.sid)
 	c.mux.CleanupStream(c.sid)
 	return nil
-}
-
-	return nil
-}
-
 func (c *MuxConn) LocalAddr() net.Addr                { return AddrMock{addr: "mux-local"} }
 func (c *MuxConn) RemoteAddr() net.Addr               { return AddrMock{addr: "mux-remote"} }
 func (c *MuxConn) SetDeadline(t time.Time) error      { return nil }
