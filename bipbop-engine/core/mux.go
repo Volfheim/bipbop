@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Stream представляет собой отдельный TCP-поток внутри DataChannel
+// MuxStream представляет собой отдельный TCP-поток внутри DataChannel
 type MuxStream struct {
 	ID          uint16
 	ClientID    uint32
@@ -19,10 +19,29 @@ type MuxStream struct {
 	outOfOrder  map[uint32][]byte
 }
 
-func (s *MuxStream) RecvBuf() []byte {
+// Read копирует данные из внутреннего буфера в предоставленный срез b.
+// Возвращает количество скопированных байт. Если данных нет, возвращает 0.
+func (s *MuxStream) Read(b []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.recvBuf
+
+	if len(s.recvBuf) == 0 {
+		if s.closed {
+			return 0, fmt.Errorf("EOF")
+		}
+		return 0, nil
+	}
+
+	n := copy(b, s.recvBuf)
+	// Удаляем только то, что скопировали
+	s.recvBuf = s.recvBuf[n:]
+	return n, nil
+}
+
+func (s *MuxStream) HasData() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.recvBuf) > 0
 }
 
 // Multiplexer — легковесный мультиплексор из olcrtc
@@ -48,7 +67,7 @@ func NewMultiplexer(clientID uint32, onSend func([]byte) error) *Multiplexer {
 		clientID:      clientID,
 		onSend:        onSend,
 		maxStreams:    10000,
-		maxBufferSize: 16 * 1024 * 1024,
+		maxBufferSize: 32 * 1024 * 1024, // Увеличим лимит до 32МБ
 		dataReady:     make(map[uint16]chan struct{}),
 		sendSeq:       make(map[uint16]uint32),
 		acceptCh:      make(chan uint16, 1000),
@@ -148,7 +167,6 @@ func (m *Multiplexer) HandleFrame(frame []byte) {
 	length := binary.BigEndian.Uint16(frame[6:8])
 	seq := binary.BigEndian.Uint32(frame[8:12])
 
-	// 0xFFFF 0xFFFF — сигнал от сервера о закрытии всех стримов клиента
 	if sid == 0xFFFF && length == 0xFFFF {
 		m.mu.Lock()
 		for streamSid, stream := range m.streams {
@@ -161,11 +179,11 @@ func (m *Multiplexer) HandleFrame(frame []byte) {
 		return
 	}
 
-	// length 0 — сигнал о закрытии конкретного стрима
 	if length == 0 {
 		m.mu.Lock()
 		if stream, exists := m.streams[sid]; exists && stream.ClientID == clientID {
 			stream.closed = true
+			m.notifyData(sid)
 		}
 		m.mu.Unlock()
 		return
@@ -194,7 +212,6 @@ func (m *Multiplexer) HandleFrame(frame []byte) {
 		}
 		m.streams[sid] = stream
 
-		// Уведомляем сервер о новом потоке
 		select {
 		case m.acceptCh <- sid:
 		default:
@@ -210,6 +227,7 @@ func (m *Multiplexer) HandleFrame(frame []byte) {
 	if seq == stream.nextSeq {
 		if len(stream.recvBuf)+len(data) > m.maxBufferSize {
 			stream.closed = true
+			m.notifyData(sid)
 			return
 		}
 		stream.recvBuf = append(stream.recvBuf, data...)
@@ -219,7 +237,7 @@ func (m *Multiplexer) HandleFrame(frame []byte) {
 			if nextData, ok := stream.outOfOrder[stream.nextSeq]; ok {
 				if len(stream.recvBuf)+len(nextData) > m.maxBufferSize {
 					stream.closed = true
-					return
+					break
 				}
 				stream.recvBuf = append(stream.recvBuf, nextData...)
 				delete(stream.outOfOrder, stream.nextSeq)
@@ -228,34 +246,35 @@ func (m *Multiplexer) HandleFrame(frame []byte) {
 				break
 			}
 		}
-		
-		m.dataReadyMu.Lock()
-		if ch, ok := m.dataReady[sid]; ok {
-			select {
-			case ch <- struct{}{}:
-			default:
-			}
-		}
-		m.dataReadyMu.Unlock()
+		m.notifyData(sid)
 	} else if seq > stream.nextSeq {
-		if len(stream.outOfOrder) < 100 {
+		if len(stream.outOfOrder) < 1000 {
 			stream.outOfOrder[seq] = append([]byte(nil), data...)
 		}
 	}
 }
 
-func (m *Multiplexer) ReadStream(sid uint16) []byte {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *Multiplexer) notifyData(sid uint16) {
+	m.dataReadyMu.Lock()
+	if ch, ok := m.dataReady[sid]; ok {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	m.dataReadyMu.Unlock()
+}
 
+func (m *Multiplexer) ReadStream(sid uint16, b []byte) (int, error) {
+	m.mu.RLock()
 	stream, exists := m.streams[sid]
-	if !exists || len(stream.recvBuf) == 0 {
-		return nil
+	m.mu.RUnlock()
+
+	if !exists {
+		return 0, fmt.Errorf("stream not found")
 	}
 
-	data := stream.recvBuf
-	stream.recvBuf = make([]byte, 0)
-	return data
+	return stream.Read(b)
 }
 
 func (m *Multiplexer) StreamClosed(sid uint16) bool {
@@ -264,22 +283,6 @@ func (m *Multiplexer) StreamClosed(sid uint16) bool {
 
 	stream, exists := m.streams[sid]
 	return !exists || stream.closed
-}
-
-func (m *Multiplexer) Reset() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	for _, stream := range m.streams {
-		stream.closed = true
-	}
-	
-	m.streams = make(map[uint16]*MuxStream)
-	m.nextID = 1
-	
-	m.sendSeqMu.Lock()
-	m.sendSeq = make(map[uint16]uint32)
-	m.sendSeqMu.Unlock()
 }
 
 func (m *Multiplexer) WaitForData(sid uint16) <-chan struct{} {
@@ -315,13 +318,10 @@ func (m *Multiplexer) CleanupStream(sid uint16) {
 	m.mu.Unlock()
 }
 
-// Пакет core также реализует адаптер для net.Conn поверх MuxStream (для серверной части)
+// MuxConn адаптер
 type MuxConn struct {
 	sid   uint16
 	mux   *Multiplexer
-	isCl  bool
-	lAddr AddrMock
-	rAddr AddrMock
 }
 
 func NewMuxConn(sid uint16, mux *Multiplexer) *MuxConn {
@@ -330,9 +330,12 @@ func NewMuxConn(sid uint16, mux *Multiplexer) *MuxConn {
 
 func (c *MuxConn) Read(b []byte) (int, error) {
 	for {
-		data := c.mux.ReadStream(c.sid)
-		if data != nil {
-			return copy(b, data), nil
+		n, err := c.mux.ReadStream(c.sid, b)
+		if n > 0 {
+			return n, nil
+		}
+		if err != nil {
+			return 0, err
 		}
 		if c.mux.StreamClosed(c.sid) {
 			return 0, fmt.Errorf("EOF")
@@ -352,14 +355,16 @@ func (c *MuxConn) Write(b []byte) (int, error) {
 }
 
 func (c *MuxConn) Close() error {
-	c.isCl = true
 	c.mux.CloseStream(c.sid)
 	c.mux.CleanupStream(c.sid)
 	return nil
 }
 
-func (c *MuxConn) LocalAddr() net.Addr                { return c.lAddr }
-func (c *MuxConn) RemoteAddr() net.Addr               { return c.rAddr }
+	return nil
+}
+
+func (c *MuxConn) LocalAddr() net.Addr                { return AddrMock{addr: "mux-local"} }
+func (c *MuxConn) RemoteAddr() net.Addr               { return AddrMock{addr: "mux-remote"} }
 func (c *MuxConn) SetDeadline(t time.Time) error      { return nil }
 func (c *MuxConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *MuxConn) SetWriteDeadline(t time.Time) error { return nil }

@@ -66,9 +66,11 @@ func (e *vpnEngine) run() error {
 	for {
 		select {
 		case <-e.ctx.Done():
+			logToApp("warn", "[LIB] run() loop exiting due to context cancel (Stop called)")
 			return nil
 		case <-e.sess.Wait():
-			logToApp("warn", "[ENG] Connection lost - redialing...")
+			logToApp("warn", "[ENG] Session wait triggered (Connection lost)")
+			logToApp("warn", "[ENG] Redialing...")
 			emit("reconnecting")
 
 			for {
@@ -113,6 +115,7 @@ func (e *vpnEngine) serveSocks5(ln net.Listener) {
 }
 
 func (e *vpnEngine) handleSocks5(c net.Conn) {
+	logToApp("info", "[ENG] New SOCKS5 connection handling started")
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(60 * time.Second))
 

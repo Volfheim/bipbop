@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	Version     = "4.2-PURE"
+	Version     = "4.3-STABLE"
 	DefPort     = "8443"
 	MaxBackoff  = 60 * time.Second
 	HealthEvery = 15 * time.Second
@@ -107,16 +107,17 @@ func Establish(cache *CredsCache, key, name string, isServer bool) (*Multiplexer
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	roomURL, password, err := ParseSmartKey(key)
+	roomURL, _, err := ParseSmartKey(key)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid smart-key: %w", err)
 	}
-	_ = password
+	log.Info(fmt.Sprintf("[ENG] Smart-key parsed. Room: %s", roomURL))
 
 	peer, err := NewWebRTCPeer(roomURL, name, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to init WebRTC: %w", err)
 	}
+	log.Info("[ENG] WebRTC Peer initialized.")
 
 	// Создаем мультиплексор olcrtc. В качестве clientID используем CRC (или просто 1 для начала)
 	// В olcrtc это может быть случайный ID.
@@ -131,6 +132,7 @@ func Establish(cache *CredsCache, key, name string, isServer bool) (*Multiplexer
 
 	if err := peer.Connect(ctx); err != nil {
 		peer.Close()
+		log.Error(fmt.Sprintf("[ENG] Telemost connect failed: %v", err))
 		return nil, nil, fmt.Errorf("telemost connect error: %w", err)
 	}
 
@@ -152,6 +154,7 @@ type Session struct {
 }
 
 func (s *Session) Set(m *Multiplexer, c io.Closer) {
+	getLog().Info("[ENG] Session.Set() called")
 	s.Lock()
 	defer s.Unlock()
 	if s.Cl != nil {
