@@ -29,6 +29,11 @@ type vpnEngine struct {
 }
 
 func (e *vpnEngine) run() error {
+	defer func() {
+		if r := recover(); r != nil {
+			logToApp("error", fmt.Sprintf("[CRASH_PROTECT] Recovered from panic: %v", r))
+		}
+	}()
 	socksAddr := "127.0.0.1:13349"
 
 	// 1. Start SOCKS5 once
@@ -67,9 +72,11 @@ func (e *vpnEngine) run() error {
 		select {
 		case <-e.ctx.Done():
 			logToApp("warn", "[LIB] run() loop exiting due to context cancel (Stop called)")
+			if m, ok := e.sess.Get(); ok && m != nil { m.Close() }
 			return nil
 		case <-e.sess.Wait():
 			logToApp("warn", "[ENG] Session wait triggered (Connection lost)")
+			if m, ok := e.sess.Get(); ok && m != nil { m.Close() }
 			logToApp("warn", "[ENG] Redialing...")
 			emit("reconnecting")
 

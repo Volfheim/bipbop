@@ -13,10 +13,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"math/rand"
 )
 
 const (
-	Version     = "4.3-STABLE"
+	Version     = "4.4-STABLE"
 	DefPort     = "8443"
 	MaxBackoff  = 60 * time.Second
 	HealthEvery = 15 * time.Second
@@ -119,9 +120,12 @@ func Establish(cache *CredsCache, key, name string, isServer bool) (*Multiplexer
 	}
 	log.Info("[ENG] WebRTC Peer initialized.")
 
-	// Создаем мультиплексор olcrtc. В качестве clientID используем CRC (или просто 1 для начала)
-	// В olcrtc это может быть случайный ID.
-	mux := NewMultiplexer(1, func(data []byte) error {
+	// Генерируем случайный ClientID для каждой новой сессии WebRTC,
+	// чтобы сервер понимал, что это новый поток данных и сбросил seq.
+	clientID := uint32(rand.New(rand.NewSource(time.Now().UnixNano())).Uint32())
+	if clientID == 0 { clientID = 1 }
+
+	mux := NewMultiplexer(clientID, func(data []byte) error {
 		return peer.Send(data)
 	})
 

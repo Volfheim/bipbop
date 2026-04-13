@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -27,7 +28,7 @@ func (s *MuxStream) Read(b []byte) (int, error) {
 
 	if len(s.recvBuf) == 0 {
 		if s.closed {
-			return 0, fmt.Errorf("EOF")
+			return 0, io.EOF
 		}
 		return 0, nil
 	}
@@ -275,6 +276,22 @@ func (m *Multiplexer) ReadStream(sid uint16, b []byte) (int, error) {
 	}
 
 	return stream.Read(b)
+}
+
+func (m *Multiplexer) Close() {
+	m.mu.Lock()
+	streams := make([]*MuxStream, 0, len(m.streams))
+	for _, s := range m.streams {
+		streams = append(streams, s)
+	}
+	m.mu.Unlock()
+
+	for _, s := range streams {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+		m.notifyData(s.ID)
+	}
 }
 
 func (m *Multiplexer) StreamClosed(sid uint16) bool {

@@ -90,6 +90,9 @@ func runServer(cmd *cobra.Command, args []string) {
 			case <-ctx.Done():
 				return
 			case <-rch:
+				if m, ok := sess.Get(); ok && m != nil {
+					m.Close()
+				}
 				bo := 2 * time.Second
 				for a := 1; ; a++ {
 					fmt.Printf("[INFO] Reconnecting (#%d)...\n", a)
