@@ -31,56 +31,26 @@ func (d *SignalingDialer) DialContext(ctx context.Context, network, addr string)
 		return d.Dialer.DialContext(ctx, network, addr)
 	}
 
-	result := make(chan net.Conn, 1)
-	errs := make(chan error, len(staticIPs)+1)
-	fastCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// 1. Пытаемся через системный DNS (максимум 4 секунды)
+	dnsCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	conn, err := d.Dialer.DialContext(dnsCtx, network, addr)
+	cancel()
+	if err == nil {
+		return conn, nil
+	}
 
-	// 1. Попытка через системный DNS (в фоне)
-	go func() {
-		conn, err := d.Dialer.DialContext(fastCtx, network, addr)
-		if err == nil {
-			select {
-			case result <- conn:
-			default:
-				conn.Close()
-			}
-		} else {
-			errs <- err
-		}
-	}()
-
-	// 2. Попытки через хардкод IP (параллельно, но с задержкой 200мс)
+	// 2. Если DNS молчит (глушилка), пробуем статические IP по очереди
+	fmt.Printf("[ANTI-JAM] DNS Bypass for %s\n", host)
 	for _, ip := range staticIPs {
-		go func(targetIP string) {
-			time.Sleep(200 * time.Millisecond)
-			dialAddr := net.JoinHostPort(targetIP, port)
-			conn, err := d.Dialer.DialContext(fastCtx, network, dialAddr)
-			if err == nil {
-				select {
-				case result <- conn:
-					fmt.Printf("[ANTI-JAM] Parallel dial WINNER: %s (static)\n", targetIP)
-				default:
-					conn.Close()
-				}
-			} else {
-				errs <- err
-			}
-		}(ip)
-	}
-
-	// Ждем первого успеха или пока всё не упадет
-	totalAttempts := len(staticIPs) + 1
-	for i := 0; i < totalAttempts; i++ {
-		select {
-		case conn := <-result:
-			return conn, nil
-		case <-errs:
-			// продолжаем ждать
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		dialAddr := net.JoinHostPort(ip, port)
+		staticCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		c, err := d.Dialer.DialContext(staticCtx, network, dialAddr)
+		cancel()
+		if err == nil {
+			fmt.Printf("[ANTI-JAM] Connected via static IP: %s\n", ip)
+			return c, nil
 		}
 	}
 
-	return nil, fmt.Errorf("all dialing attempts failed for %s", addr)
+	return nil, fmt.Errorf("all connection attempts for %s failed", addr)
 }

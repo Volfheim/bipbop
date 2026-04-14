@@ -64,7 +64,7 @@ func (e *vpnEngine) run() error {
 
 	// 3. Start tun2socks only if tunFd != -1
 	if e.tunFd != -1 {
-		t2s, err := newTun2Socks(e.tunFd, socksAddr, e.mtu, e.dns)
+		t2s, err := newTun2Socks(e.tunFd, socksAddr, 1100, e.dns)
 		if err != nil {
 			emit("error")
 			return err
