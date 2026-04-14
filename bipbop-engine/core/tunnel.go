@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	Version     = "4.7-AGGRESSIVE-RECONNECT"
+	Version     = "4.7-ELUSIVE"
 	DefPort     = "8443"
 	MaxBackoff  = 60 * time.Second
 	HealthEvery = 15 * time.Second
@@ -138,18 +138,6 @@ func Establish(cache *CredsCache, key, name string, isServer bool) (*Multiplexer
 		peer.Close()
 		log.Error(fmt.Sprintf("[ENG] Telemost connect failed: %v", err))
 		return nil, nil, fmt.Errorf("telemost connect error: %w", err)
-	}
-
-	// Устанавливаем обработчик разрыва связи, чтобы немедленно инициировать переподключение
-	peer.OnDisconnected = func() {
-		if mux != nil {
-			log.Warn("[RTC] Connection loss detected, triggering session reset...")
-			// Мы не вызываем session.Down() напрямую здесь, 
-			// так как Establish возвращает mux и peer.
-			// Вместо этого мы закроем peer, что должно триггернуть Wait() в объекте сессии, 
-			// если он правильно настроен.
-			peer.Close()
-		}
 	}
 
 	log.Info("[ENG] DataChannel established and Mux ready!")

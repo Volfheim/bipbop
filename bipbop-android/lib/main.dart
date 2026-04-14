@@ -231,7 +231,7 @@ class _VPNScreenState extends State<VPNScreen> with SingleTickerProviderStateMix
                     ),
                   ),
                   Text(
-                    'v1.2.1 (Anti-Jammer Edition)',
+                    'v4.7-ELUSIVE',
                     style: TextStyle(
                       fontSize: 12,
                       color: Colors.white.withOpacity(0.3),

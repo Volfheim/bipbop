@@ -27,6 +27,7 @@ type vpnEngine struct {
 	rxBytes   atomic.Int64
 	dnsSem    chan struct{}
 	wg        sync.WaitGroup
+	failCount atomic.Int32
 }
 
 func (e *vpnEngine) run() error {
@@ -183,6 +184,18 @@ func (e *vpnEngine) handleSocksClient(c net.Conn) {
 		return
 	}
 
+	failure := func() {
+		cnt := e.failCount.Add(1)
+		if cnt > 5 {
+			logToApp("error", "[ENG] Critical failure threshold reached, resetting session...")
+			e.sess.Down()
+			e.failCount.Store(0)
+		}
+	}
+	success := func() {
+		e.failCount.Store(0)
+	}
+
 	if cmd != 0x01 {
 		c.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
@@ -191,24 +204,28 @@ func (e *vpnEngine) handleSocksClient(c net.Conn) {
 	// ConnectReq to remote via Mux
 	s.Write([]byte{0x05, 0x01, 0x00})
 	vBuf := make([]byte, 2)
-	s.SetReadDeadline(time.Now().Add(10 * time.Second))
+	s.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := io.ReadFull(s, vBuf); err != nil || vBuf[0] != 0x05 || vBuf[1] != 0x00 {
 		c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		failure()
 		return
 	}
 
 	s.Write(buf[:n])
 	respBuf := make([]byte, 256)
-	s.SetReadDeadline(time.Now().Add(10 * time.Second))
+	s.SetReadDeadline(time.Now().Add(5 * time.Second))
 	rn, err := s.Read(respBuf)
 	if err != nil || rn < 2 {
 		c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		failure()
 		return
 	}
 	c.Write(respBuf[:rn])
 	if respBuf[1] != 0x00 {
 		return
 	}
+
+	success()
 
 	s.SetDeadline(time.Time{})
 	c.SetDeadline(time.Time{})

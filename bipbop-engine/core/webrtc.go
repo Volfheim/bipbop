@@ -31,7 +31,7 @@ type WebRTCPeer struct {
 	sendQueue       chan []byte
 	sendQueueClosed atomic.Bool
 	wg              sync.WaitGroup
-	OnDisconnected  func()
+	lastRxTime      atomic.Int64
 }
 
 func (p *WebRTCPeer) GetSendQueue() chan []byte {
@@ -66,6 +66,11 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	config := webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
 			{URLs: []string{"stun:stun.rtc.yandex.net:3478"}},
+			{
+				URLs: []string{"turn:relay.rtc.yandex.net:3478?transport=udp", "turn:relay.rtc.yandex.net:3478?transport=tcp"},
+				Username: "yandex", // У Yandex Telemost часто пустые или фиксированные креды для публичных релеев
+				Credential: "password",
+			},
 		},
 		SDPSemantics: webrtc.SDPSemanticsUnifiedPlan,
 	}
@@ -80,12 +85,7 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	}
 
 	p.pcSub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		log.Printf("[RTC] Sub state change: %s", state.String())
-		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected || state == webrtc.PeerConnectionStateClosed {
-			if p.OnDisconnected != nil {
-				p.OnDisconnected()
-			}
-		}
+		log.Printf("Subscriber PeerConnection state: %s", state.String())
 	})
 
 	p.pcPub, err = api.NewPeerConnection(config)
@@ -94,12 +94,7 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	}
 
 	p.pcPub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		log.Printf("[RTC] Pub state change: %s", state.String())
-		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected || state == webrtc.PeerConnectionStateClosed {
-			if p.OnDisconnected != nil {
-				p.OnDisconnected()
-			}
-		}
+		log.Printf("Publisher PeerConnection state: %s", state.String())
 	})
 
 	p.dc, err = p.pcPub.CreateDataChannel("olcrtc", nil)
@@ -129,7 +124,7 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			p.heartbeatLoop()
+			p.dcHeartbeat()
 		}()
 
 		close(dcReady)
@@ -140,6 +135,10 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	})
 
 	p.dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+		p.lastRxTime.Store(time.Now().Unix())
+		if len(msg.Data) == 1 && msg.Data[0] == 0xFF {
+			return // Heartbeat
+		}
 		if p.onData != nil && len(msg.Data) > 0 {
 			p.onData(msg.Data)
 		}
@@ -225,37 +224,7 @@ func (p *WebRTCPeer) CanSend() bool {
 	if p.dc != nil {
 		buffered = p.dc.BufferedAmount()
 	}
-	// Увеличим порог для возможности отправки пульса
-	return queueLen < 2000 && buffered < 5*1024*1024
-}
-
-func (p *WebRTCPeer) heartbeatLoop() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	failCount := 0
-	for {
-		select {
-		case <-p.closeCh:
-			return
-		case <-ticker.C:
-			if p.dc != nil && p.dc.ReadyState() == webrtc.DataChannelStateOpen {
-				ping := make([]byte, 12)
-				if err := p.Send(ping); err != nil {
-					failCount++
-					log.Printf("[RTC] Heartbeat send failed (%d/3): %v", failCount, err)
-					if failCount >= 3 {
-						if p.OnDisconnected != nil {
-							p.OnDisconnected()
-						}
-						return
-					}
-				} else {
-					failCount = 0
-				}
-			}
-		}
-	}
+	return queueLen < 1000 && buffered < 3*1024*1024
 }
 
 func (p *WebRTCPeer) sendHello() error {
@@ -553,10 +522,6 @@ func (p *WebRTCPeer) Close() error {
 	return nil
 }
 
-func (p *WebRTCPeer) Wait() <-chan struct{} {
-	return p.closeCh
-}
-
 func (p *WebRTCPeer) keepAlive() {
 	wsPingTicker := time.NewTicker(30 * time.Second)
 	defer wsPingTicker.Stop()
@@ -643,6 +608,29 @@ func (p *WebRTCPeer) monitorQueue() {
 			}
 			if queueLen > 800 || buffered > 3*1024*1024 {
 				log.Printf("[QUEUE_MONITOR] queue_len=%d dc_buffered=%d MB", queueLen, buffered/(1024*1024))
+			}
+		case <-p.closeCh:
+			return
+		}
+	}
+}
+func (p *WebRTCPeer) dcHeartbeat() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	p.lastRxTime.Store(time.Now().Unix())
+
+	for {
+		select {
+		case <-ticker.C:
+			if p.dc != nil && p.dc.ReadyState() == webrtc.DataChannelStateOpen {
+				p.dc.Send([]byte{0xFF})
+			}
+			last := p.lastRxTime.Load()
+			if time.Since(time.Unix(last, 0)) > 20*time.Second {
+				log.Println("[DC_HEARTBEAT] Timeout - connection stalled, closing...")
+				p.Close()
+				return
 			}
 		case <-p.closeCh:
 			return
