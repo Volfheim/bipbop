@@ -26,17 +26,11 @@ fi
 print_banner() {
     clear
     echo -e "${CYAN}${BOLD}"
-    echo "  _   _       _  __ _          _           "
-    echo " | | | |     | |/ _| |        (_)          "
-    echo " | | | | ___ | | |_| |__   ___ _ _ __ ___  "
-    echo " | | | |/ _ \| |  _| '_ \ / _ \ | '_ \` _ \ "
-    echo " \ \_/ / (_) | | | | | | |  __/ | | | | | |"
-    echo "  \___/ \___/|_|_| |_| |_|\___|_|_| |_| |_|"
-    echo "                                           "
-    echo "        BIP-BOP Server Manager v4.8         
-        Version: 4.8-RESILIENT
-${NC}"
-    echo -e "${NC}================================================="
+    echo "*************************************************"
+    echo "        BIP-BOP Server Manager v4.8.2          "
+    echo "        STATUS: RESILIENT STABLE               "
+    echo "*************************************************"
+    echo -e "${NC}"
 }
 
 get_room_url() {
