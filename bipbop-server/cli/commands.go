@@ -132,6 +132,9 @@ func runServer(cmd *cobra.Command, args []string) {
 			defer conn.Close()
 			if err := srv.ServeConn(conn); err != nil {
 				fmt.Printf("[WARN] Mux stream %d error: %v\n", sID, err)
+				// Если ошибка критическая (например, DataChannel закрыт), 
+				// сбрасываем всю сессию, чтобы заставить клиента переподключиться.
+				sess.Down()
 			}
 		}(sid, m)
 	}

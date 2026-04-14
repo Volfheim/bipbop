@@ -52,6 +52,7 @@ type Multiplexer struct {
 	clientID      uint32
 	onSend        func([]byte) error
 	mu            sync.RWMutex
+	closeOnce     sync.Once
 	maxStreams    int
 	maxBufferSize int
 	dataReady     map[uint16]chan struct{}
@@ -130,6 +131,7 @@ func (m *Multiplexer) SendData(sid uint16, data []byte) error {
 		copy(frame[12:], chunk)
 
 		if err := m.onSend(frame); err != nil {
+			m.Close() // Самоликвидация при ошибке отправки
 			return err
 		}
 	}
@@ -279,19 +281,21 @@ func (m *Multiplexer) ReadStream(sid uint16, b []byte) (int, error) {
 }
 
 func (m *Multiplexer) Close() {
-	m.mu.Lock()
-	streams := make([]*MuxStream, 0, len(m.streams))
-	for _, s := range m.streams {
-		streams = append(streams, s)
-	}
-	m.mu.Unlock()
+	m.closeOnce.Do(func() {
+		m.mu.Lock()
+		streams := make([]*MuxStream, 0, len(m.streams))
+		for _, s := range m.streams {
+			streams = append(streams, s)
+		}
+		m.mu.Unlock()
 
-	for _, s := range streams {
-		s.mu.Lock()
-		s.closed = true
-		s.mu.Unlock()
-		m.notifyData(s.ID)
-	}
+		for _, s := range streams {
+			s.mu.Lock()
+			s.closed = true
+			s.mu.Unlock()
+			m.notifyData(s.ID)
+		}
+	})
 }
 
 func (m *Multiplexer) StreamClosed(sid uint16) bool {

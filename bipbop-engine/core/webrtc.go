@@ -89,6 +89,11 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 
 	p.pcPub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		log.Printf("Publisher PeerConnection state: %s", state.String())
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+			if p.dc != nil {
+				p.dc.Close()
+			}
+		}
 	})
 
 	p.dc, err = p.pcPub.CreateDataChannel("olcrtc", nil)
