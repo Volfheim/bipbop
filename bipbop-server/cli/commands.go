@@ -64,7 +64,25 @@ func runServer(cmd *cobra.Command, args []string) {
 	mux, cl, err := core.Establish(nil, key, "Server", true, func() { sess.Down() })
 	if err == nil {
 		sess.Set(mux, cl)
+	} else {
+		fmt.Printf("[ERR] Initialization failed: %v. Entering retry loop...\n", err)
+		select {
+		case rch <- struct{}{}:
+		default:
+		}
 	}
+
+	// Мониторинг сессии: перебрасываем сигнал из sess.Wait() в rch
+	go func() {
+		for {
+			<-sess.Wait()
+			fmt.Println("[WARN] Session lost signal received. Triggering redial...")
+			select {
+			case rch <- struct{}{}:
+			default:
+			}
+		}
+	}()
 
 	// Health check (app-level heartbeats are inside webrtc.go, but we add a mux check)
 	go func() {
