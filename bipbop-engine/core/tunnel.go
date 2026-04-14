@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	Version     = "4.8-ULTRA-BOOST"
+	Version     = "4.9-ROCK-SOLID"
 	DefPort     = "8443"
 	MaxBackoff  = 60 * time.Second
 	HealthEvery = 15 * time.Second

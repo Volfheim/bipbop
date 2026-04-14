@@ -4,13 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 )
 
 // SignalingHosts - Кастомная мапа для обхода блокировок DNS
 var SignalingHosts = map[string][]string{
-	"cloud-api.yandex.ru":    {"87.250.250.242", "93.158.134.242"},
-	"goloom.strm.yandex.net": {"87.250.254.244", "213.180.193.226", "93.158.134.254"},
-	"stun.rtc.yandex.net":    {"87.250.250.119", "213.180.193.119"},
+	"cloud-api.yandex.ru":    {"213.180.204.127", "213.180.193.127"},
+	"goloom.strm.yandex.net": {"213.180.204.244", "213.180.193.226"},
+	"stun.rtc.yandex.net":    {"213.180.205.180", "213.180.193.119"},
 }
 
 // SignalingDialer - Кастомный диалер, который сначала пробует системный DNS,
@@ -49,9 +50,10 @@ func (d *SignalingDialer) DialContext(ctx context.Context, network, addr string)
 		}
 	}()
 
-	// 2. Попытки через хардкод IP (параллельно)
+	// 2. Попытки через хардкод IP (параллельно, но с задержкой 200мс)
 	for _, ip := range staticIPs {
 		go func(targetIP string) {
+			time.Sleep(200 * time.Millisecond)
 			dialAddr := net.JoinHostPort(targetIP, port)
 			conn, err := d.Dialer.DialContext(fastCtx, network, dialAddr)
 			if err == nil {
