@@ -231,7 +231,7 @@ class _VPNScreenState extends State<VPNScreen> with SingleTickerProviderStateMix
                     ),
                   ),
                   Text(
-                    'v4.7-ELUSIVE',
+                    'v4.8-RESILIENT',
                     style: TextStyle(
                       fontSize: 12,
                       color: Colors.white.withOpacity(0.3),
