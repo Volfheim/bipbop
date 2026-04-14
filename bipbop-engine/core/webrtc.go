@@ -31,6 +31,7 @@ type WebRTCPeer struct {
 	sendQueue       chan []byte
 	sendQueueClosed atomic.Bool
 	wg              sync.WaitGroup
+	OnDisconnected  func()
 }
 
 func (p *WebRTCPeer) GetSendQueue() chan []byte {
@@ -79,7 +80,12 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	}
 
 	p.pcSub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		log.Printf("Subscriber PeerConnection state: %s", state.String())
+		log.Printf("[RTC] Sub state change: %s", state.String())
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected || state == webrtc.PeerConnectionStateClosed {
+			if p.OnDisconnected != nil {
+				p.OnDisconnected()
+			}
+		}
 	})
 
 	p.pcPub, err = api.NewPeerConnection(config)
@@ -88,7 +94,12 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 	}
 
 	p.pcPub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		log.Printf("Publisher PeerConnection state: %s", state.String())
+		log.Printf("[RTC] Pub state change: %s", state.String())
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected || state == webrtc.PeerConnectionStateClosed {
+			if p.OnDisconnected != nil {
+				p.OnDisconnected()
+			}
+		}
 	})
 
 	p.dc, err = p.pcPub.CreateDataChannel("olcrtc", nil)
@@ -113,6 +124,12 @@ func (p *WebRTCPeer) Connect(ctx context.Context) error {
 		go func() {
 			defer p.wg.Done()
 			p.monitorQueue()
+		}()
+
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.heartbeatLoop()
 		}()
 
 		close(dcReady)
@@ -202,25 +219,43 @@ func (p *WebRTCPeer) Send(data []byte) error {
 	}
 }
 
-func (p *WebRTCPeer) IsHealthy() bool {
-	if p.dc == nil {
-		return false
-	}
-	state := p.dc.ReadyState()
-	if state != webrtc.DataChannelStateOpen {
-		log.Printf("[WATCH] Peer unhealthy! DataChannel state: %s", state.String())
-		return false
-	}
-	return true
-}
-
 func (p *WebRTCPeer) CanSend() bool {
 	queueLen := len(p.sendQueue)
 	buffered := uint64(0)
 	if p.dc != nil {
 		buffered = p.dc.BufferedAmount()
 	}
-	return queueLen < 1000 && buffered < 3*1024*1024
+	// Увеличим порог для возможности отправки пульса
+	return queueLen < 2000 && buffered < 5*1024*1024
+}
+
+func (p *WebRTCPeer) heartbeatLoop() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	failCount := 0
+	for {
+		select {
+		case <-p.closeCh:
+			return
+		case <-ticker.C:
+			if p.dc != nil && p.dc.ReadyState() == webrtc.DataChannelStateOpen {
+				ping := make([]byte, 12)
+				if err := p.Send(ping); err != nil {
+					failCount++
+					log.Printf("[RTC] Heartbeat send failed (%d/3): %v", failCount, err)
+					if failCount >= 3 {
+						if p.OnDisconnected != nil {
+							p.OnDisconnected()
+						}
+						return
+					}
+				} else {
+					failCount = 0
+				}
+			}
+		}
+	}
 }
 
 func (p *WebRTCPeer) sendHello() error {
@@ -516,6 +551,10 @@ func (p *WebRTCPeer) Close() error {
 	}
 
 	return nil
+}
+
+func (p *WebRTCPeer) Wait() <-chan struct{} {
+	return p.closeCh
 }
 
 func (p *WebRTCPeer) keepAlive() {

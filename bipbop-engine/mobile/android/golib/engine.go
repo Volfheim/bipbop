@@ -62,10 +62,7 @@ func (e *vpnEngine) run() error {
 	emit("connected")
 	logToApp("info", "[ENG] Initial tunnel established!")
 
-	// 4. Start Watchdog
-	go e.sess.Watchdog(e.ctx)
-
-	// 5. Start tun2socks only if tunFd != -1
+	// 3. Start tun2socks only if tunFd != -1
 	if e.tunFd != -1 {
 		t2s, err := newTun2Socks(e.tunFd, socksAddr, e.mtu, e.dns)
 		if err != nil {

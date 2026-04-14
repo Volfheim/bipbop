@@ -2,11 +2,8 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"time"
 )
 
@@ -17,7 +14,8 @@ var SignalingHosts = map[string][]string{
 	"stun.rtc.yandex.net":    {"87.250.250.119", "213.180.193.119"},
 }
 
-// SignalingDialer - Кастомный диалер, который пробует System DNS -> Static -> DoH.
+// SignalingDialer - Кастомный диалер, который сначала пробует системный DNS,
+// а при таймауте (глушилке) — переключается на хардкод.
 type SignalingDialer struct {
 	net.Dialer
 }
@@ -38,18 +36,9 @@ func (d *SignalingDialer) DialContext(ctx context.Context, network, addr string)
 	}
 
 	// 2. Если DNS упал (i/o timeout), пробуем хардкод
-	targets := []string{}
 	if staticIPs, ok := SignalingHosts[host]; ok {
-		targets = append(targets, staticIPs...)
-	}
-
-	// 3. Пытаемся DoH (Cloudflare) если хардкод не помог или для надежности
-	dohIPs := ResolveDoH(host)
-	targets = append(targets, dohIPs...)
-
-	if len(targets) > 0 {
-		fmt.Printf("[ANTI-JAM] DNS Bypass for %s triggered (Static/DoH targets count: %d)\n", host, len(targets))
-		for _, ip := range targets {
+		fmt.Printf("[ANTI-JAM] DNS Bypass for %s triggered (using static IPs)\n", host)
+		for _, ip := range staticIPs {
 			dialAddr := net.JoinHostPort(ip, port)
 			conn, err := d.Dialer.DialContext(ctx, network, dialAddr)
 			if err == nil {
@@ -58,40 +47,6 @@ func (d *SignalingDialer) DialContext(ctx context.Context, network, addr string)
 		}
 	}
 
-	// 4. Если ничего не помогло, возвращаем исходную ошибку
+	// 3. Если ничего не помогло, возвращаем исходную ошибку
 	return d.Dialer.DialContext(ctx, network, addr)
-}
-
-// ResolveDoH - Резолвинг через Cloudflare DoH (JSON API)
-func ResolveDoH(host string) []string {
-	client := &http.Client{Timeout: 5 * time.Second}
-	url := fmt.Sprintf("https://1.1.1.1/dns-query?name=%s&type=A", host)
-	
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("Accept", "application/dns-json")
-	
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	
-	var res struct {
-		Answer []struct {
-			Data string `json:"data"`
-		} `json:"Answer"`
-	}
-	
-	body, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(body, &res); err != nil {
-		return nil
-	}
-	
-	var ips []string
-	for _, a := range res.Answer {
-		if net.ParseIP(a.Data) != nil {
-			ips = append(ips, a.Data)
-		}
-	}
-	return ips
 }

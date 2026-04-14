@@ -83,9 +83,6 @@ func runServer(cmd *cobra.Command, args []string) {
 		}
 	}()
 
-	// Watchdog loop
-	go sess.Watchdog(ctx)
-
 	// Reconnect loop
 	go func() {
 		for {

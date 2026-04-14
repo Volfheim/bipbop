@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	Version     = "4.7-WATCHDOG"
+	Version     = "4.7-AGGRESSIVE-RECONNECT"
 	DefPort     = "8443"
 	MaxBackoff  = 60 * time.Second
 	HealthEvery = 15 * time.Second
@@ -29,11 +29,6 @@ type Logger interface {
 	Info(msg string)
 	Warn(msg string)
 	Error(msg string)
-}
-
-// HealthChecker allows monitoring the underlying connection.
-type HealthChecker interface {
-	IsHealthy() bool
 }
 
 // StatusListener receives tunnel state changes.
@@ -145,6 +140,18 @@ func Establish(cache *CredsCache, key, name string, isServer bool) (*Multiplexer
 		return nil, nil, fmt.Errorf("telemost connect error: %w", err)
 	}
 
+	// Устанавливаем обработчик разрыва связи, чтобы немедленно инициировать переподключение
+	peer.OnDisconnected = func() {
+		if mux != nil {
+			log.Warn("[RTC] Connection loss detected, triggering session reset...")
+			// Мы не вызываем session.Down() напрямую здесь, 
+			// так как Establish возвращает mux и peer.
+			// Вместо этого мы закроем peer, что должно триггернуть Wait() в объекте сессии, 
+			// если он правильно настроен.
+			peer.Close()
+		}
+	}
+
 	log.Info("[ENG] DataChannel established and Mux ready!")
 
 	return mux, peer, nil
@@ -201,30 +208,6 @@ func (s *Session) Down() {
 		case <-s.Ch:
 		default:
 			close(s.Ch)
-		}
-	}
-}
-
-func (s *Session) Watchdog(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.RLock()
-			hc, isHC := s.Cl.(HealthChecker)
-			ok := s.Ok
-			s.RUnlock()
-
-			if ok && isHC {
-				if !hc.IsHealthy() {
-					getLog().Warn("[WATCHDOG] Session unhealthy detected! Forcing reset...")
-					s.Down()
-				}
-			}
 		}
 	}
 }
