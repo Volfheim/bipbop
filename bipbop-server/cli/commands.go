@@ -61,28 +61,10 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	key := core.EncodeSmartKey(listenAddr, password)
 
-	mux, cl, err := core.Establish(nil, key, "Server", true, func() { sess.Down() })
+	mux, cl, err := core.Establish(nil, key, "Server", true)
 	if err == nil {
 		sess.Set(mux, cl)
-	} else {
-		fmt.Printf("[ERR] Initialization failed: %v. Entering retry loop...\n", err)
-		select {
-		case rch <- struct{}{}:
-		default:
-		}
 	}
-
-	// Мониторинг сессии: перебрасываем сигнал из sess.Wait() в rch
-	go func() {
-		for {
-			<-sess.Wait()
-			fmt.Println("[WARN] Session lost signal received. Triggering redial...")
-			select {
-			case rch <- struct{}{}:
-			default:
-			}
-		}
-	}()
 
 	// Health check (app-level heartbeats are inside webrtc.go, but we add a mux check)
 	go func() {
@@ -101,6 +83,9 @@ func runServer(cmd *cobra.Command, args []string) {
 		}
 	}()
 
+	// Watchdog loop
+	go sess.Watchdog(ctx)
+
 	// Reconnect loop
 	go func() {
 		for {
@@ -114,7 +99,7 @@ func runServer(cmd *cobra.Command, args []string) {
 				bo := 2 * time.Second
 				for a := 1; ; a++ {
 					fmt.Printf("[INFO] Reconnecting (#%d)...\n", a)
-					m, c, e := core.Establish(nil, key, "Server", true, func() { sess.Down() })
+					m, c, e := core.Establish(nil, key, "Server", true)
 					if e == nil {
 						sess.Set(m, c)
 						fmt.Println("[INFO] Connection restored!")

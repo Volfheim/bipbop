@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	Version     = "4.11-STABLE"
+	Version     = "4.7-WATCHDOG"
 	DefPort     = "8443"
 	MaxBackoff  = 60 * time.Second
 	HealthEvery = 15 * time.Second
@@ -29,6 +29,11 @@ type Logger interface {
 	Info(msg string)
 	Warn(msg string)
 	Error(msg string)
+}
+
+// HealthChecker allows monitoring the underlying connection.
+type HealthChecker interface {
+	IsHealthy() bool
 }
 
 // StatusListener receives tunnel state changes.
@@ -102,10 +107,10 @@ func SmartKeyServerIP(k string) (string, error) {
 
 // --- Establish tunnel ---
 
-func Establish(cache *CredsCache, key, name string, isServer bool, onDisconnect func()) (*Multiplexer, io.Closer, error) {
+func Establish(cache *CredsCache, key, name string, isServer bool) (*Multiplexer, io.Closer, error) {
 	log := getLog()
 	log.Info(fmt.Sprintf("[ENG] Establishing tunnel... (Version: %s)", Version))
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	roomURL, _, err := ParseSmartKey(key)
@@ -131,7 +136,6 @@ func Establish(cache *CredsCache, key, name string, isServer bool, onDisconnect 
 
 	// Привязываем обработку данных из DataChannel к мультиплексору
 	peer.onData = mux.HandleFrame
-	peer.OnDisconnected = onDisconnect
 
 	log.Info(fmt.Sprintf("[ENG] Connecting to Telemost Room... (%s)", roomURL))
 
@@ -197,6 +201,30 @@ func (s *Session) Down() {
 		case <-s.Ch:
 		default:
 			close(s.Ch)
+		}
+	}
+}
+
+func (s *Session) Watchdog(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.RLock()
+			hc, isHC := s.Cl.(HealthChecker)
+			ok := s.Ok
+			s.RUnlock()
+
+			if ok && isHC {
+				if !hc.IsHealthy() {
+					getLog().Warn("[WATCHDOG] Session unhealthy detected! Forcing reset...")
+					s.Down()
+				}
+			}
 		}
 	}
 }

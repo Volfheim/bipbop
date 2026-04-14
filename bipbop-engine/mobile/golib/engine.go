@@ -34,7 +34,7 @@ func (e *vpnEngine) run() error {
 	cache := &core.CredsCache{}
 	logToApp("info", "[ENG] Fetching TURN credentials...")
 
-	ym, cl, err := core.Establish(cache, e.peer, e.pw, true, func() { e.sess.Down() })
+	ym, cl, err := core.Establish(cache, e.peer, e.pw, true)
 	if err != nil {
 		emit("error")
 		logToApp("error", fmt.Sprintf("[ENG] Tunnel: %v", err))
@@ -134,7 +134,7 @@ func (e *vpnEngine) run() error {
 					default:
 					}
 					logToApp("info", fmt.Sprintf("[ENG] Reconnecting (#%d)...", attempt))
-					y, c, err := core.Establish(cache, e.peer, e.pw, attempt > 3, func() { e.sess.Down() })
+					y, c, err := core.Establish(cache, e.peer, e.pw, attempt > 3)
 					if err == nil {
 						e.sess.Set(y, c)
 						emit("connected")
