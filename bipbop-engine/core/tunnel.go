@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	Version     = "4.4-STABLE"
+	Version     = "4.5-ANTI-JAM"
 	DefPort     = "8443"
 	MaxBackoff  = 60 * time.Second
 	HealthEvery = 15 * time.Second
