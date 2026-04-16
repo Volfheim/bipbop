@@ -51,7 +51,16 @@ install_server() {
     curl -sL "https://raw.githubusercontent.com/$GITHUB_REPO/main/bipbop-server/volfheim-linux-amd64?v=$(date +%s)" -o "$INSTALL_DIR/$BIN_NAME"
     chmod +x "$INSTALL_DIR/$BIN_NAME"
 
-    if [[ ! -f "$CONF_FILE" ]]; then
+    local force_gen=false
+    if [[ -f "$CONF_FILE" ]]; then
+        # Читаем старый конфиг для проверки
+        source "$CONF_FILE"
+        if [[ -z "$SMART_KEY" || "$VOLFHEIM_ROOM_URL" == *"telemost.yandex.ru"* ]]; then
+            force_gen=true
+        fi
+    fi
+
+    if [[ ! -f "$CONF_FILE" || "$force_gen" == true ]]; then
         echo -e "${CYAN}>>> Генерация конфигурации Jazz Room...${NC}"
         $INSTALL_DIR/$BIN_NAME gen > "$CONF_FILE"
         chmod 600 "$CONF_FILE"
