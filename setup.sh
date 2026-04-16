@@ -33,7 +33,7 @@ print_banner() {
     echo " \ \_/ / (_) | | | | | | |  __/ | | | | | |"
     echo "  \___/ \___/|_|_| |_| |_|\___|_|_| |_| |_|"
     echo "                                           "
-    echo "        BIP-BOP Server Manager v4.5
+    echo "        BIP-BOP Server Manager v4.5"
     echo -e "${YELLOW}        Version: 4.5-GOLDEN${NC}"
     echo -e "${NC}================================================="
 }
