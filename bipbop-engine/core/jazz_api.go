@@ -77,7 +77,7 @@ func createMeeting(ctx context.Context, headers map[string]string) (*createRespo
 		return nil, fmt.Errorf("marshal create payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+"/room/create-meeting",
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, jazzApiBase+"/room/create-meeting",
 		bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -181,6 +181,7 @@ func joinRoom(ctx context.Context, roomID, password string) (*RoomInfo, error) {
 		ConnectorURL: connectorURL,
 	}, nil
 }
+
 
 
 

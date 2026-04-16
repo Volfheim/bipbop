@@ -20,7 +20,7 @@ var signalingClient = &http.Client{
 	Timeout: 30 * time.Second,
 }
 
-const apiBase = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"
+const yandexApiBase = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"
 
 type ConnectionInfo struct {
 	RoomID       string `json:"room_id"`
@@ -32,7 +32,7 @@ type ConnectionInfo struct {
 }
 
 func GetConnectionInfo(roomURL, displayName string) (*ConnectionInfo, error) {
-	u := fmt.Sprintf("%s/conferences/%s/connection", apiBase, url.QueryEscape(roomURL))
+	u := fmt.Sprintf("%s/conferences/%s/connection", yandexApiBase, url.QueryEscape(roomURL))
 
 	req, err := http.NewRequest("GET", u, nil)
 	if err != nil {
