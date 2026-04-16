@@ -46,25 +46,23 @@ install_server() {
     echo -e "\n${CYAN}>>> Установка / Обновление Volfheim Server...${NC}"
     mkdir -p "$CONF_DIR"
 
-    local room_url=$(get_room_url)
-    
-    if [[ -z "$room_url" ]]; then
-        echo -e "${YELLOW}Введите Вечную Ссылку из Яндекс Телемост:${NC}"
-        read -r -p "Ссылка: " room_url
-        if [[ -z "$room_url" || ! "$room_url" == *"telemost.yandex.ru"* ]]; then
-            echo -e "${RED}[✗] Некорректная ссылка.${NC}"
-            return
-        fi
-        password=$(openssl rand -hex 16)
-        echo "VOLFHEIM_PASSWORD=$password" > "$CONF_FILE"
-        echo "VOLFHEIM_ROOM_URL=$room_url" >> "$CONF_FILE"
-        chmod 600 "$CONF_FILE"
-    fi
-
     echo -e "${CYAN}>>> Загрузка бинарника...${NC}"
     rm -f "$INSTALL_DIR/$BIN_NAME"
     curl -sL "https://raw.githubusercontent.com/$GITHUB_REPO/main/bipbop-server/volfheim-linux-amd64?v=$(date +%s)" -o "$INSTALL_DIR/$BIN_NAME"
     chmod +x "$INSTALL_DIR/$BIN_NAME"
+
+    if [[ ! -f "$CONF_FILE" ]]; then
+        echo -e "${CYAN}>>> Генерация конфигурации Jazz Room...${NC}"
+        $INSTALL_DIR/$BIN_NAME gen > "$CONF_FILE"
+        chmod 600 "$CONF_FILE"
+    else
+        echo -e "${CYAN}>>> Конфигурация уже существует, используем ее...${NC}"
+    fi
+
+    source "$CONF_FILE"
+    echo -e "\n${YELLOW}┌─── SMART KEY ───────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│${NC} ${GREEN}${SMART_KEY}${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────────────┘${NC}\n"
 
     cat <<EOF > /etc/systemd/system/$SVC_NAME
 [Unit]

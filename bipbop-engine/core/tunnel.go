@@ -108,39 +108,39 @@ func Establish(cache *CredsCache, key, name string, isServer bool) (*Multiplexer
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	roomURL, _, err := ParseSmartKey(key)
+	roomURL, pw, err := ParseSmartKey(key)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid smart-key: %w", err)
 	}
 	log.Info(fmt.Sprintf("[ENG] Smart-key parsed. Room: %s", roomURL))
 
-	peer, err := NewWebRTCPeer(roomURL, name, nil)
+	peer, err := NewPeer(ctx, roomURL+":"+pw, name, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to init WebRTC: %w", err)
+		return nil, nil, fmt.Errorf("failed to init Jazz WebRTC: %w", err)
 	}
-	log.Info("[ENG] WebRTC Peer initialized.")
+	log.Info("[ENG] Jazz WebRTC Peer initialized.")
 
 	// Генерируем случайный ClientID для каждой новой сессии WebRTC,
 	// чтобы сервер понимал, что это новый поток данных и сбросил seq.
 	clientID := uint32(rand.New(rand.NewSource(time.Now().UnixNano())).Uint32())
 	if clientID == 0 { clientID = 1 }
 
-	mux := NewMultiplexer(clientID, func(data []byte) error {
+	mux := New(clientID, func(data []byte) error {
 		return peer.Send(data)
 	})
 
 	// Привязываем обработку данных из DataChannel к мультиплексору
 	peer.onData = mux.HandleFrame
 
-	log.Info(fmt.Sprintf("[ENG] Connecting to Telemost Room... (%s)", roomURL))
+	log.Info(fmt.Sprintf("[ENG] Connecting to Jazz Room... (%s)", roomURL))
 
 	if err := peer.Connect(ctx); err != nil {
 		peer.Close()
-		log.Error(fmt.Sprintf("[ENG] Telemost connect failed: %v", err))
-		return nil, nil, fmt.Errorf("telemost connect error: %w", err)
+		log.Error(fmt.Sprintf("[ENG] Jazz connect failed: %v", err))
+		return nil, nil, fmt.Errorf("jazz connect error: %w", err)
 	}
 
-	log.Info("[ENG] DataChannel established and Mux ready!")
+	log.Info("[ENG] Jazz DataChannel established and Mux ready!")
 
 	return mux, peer, nil
 }

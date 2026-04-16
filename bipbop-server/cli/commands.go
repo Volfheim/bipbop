@@ -2,8 +2,7 @@ package cli
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+
 	"fmt"
 	"time"
 
@@ -32,22 +31,19 @@ func NewServerCmd() *cobra.Command {
 func NewGenerateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gen",
-		Short: "Generate a new remote Smart-Key",
+		Short: "Generate a new remote Smart-Key and Room",
 		Run: func(cmd *cobra.Command, args []string) {
-			if password == "" {
-				b := make([]byte, 16)
-				rand.Read(b)
-				password = hex.EncodeToString(b)
+			ctx := context.Background()
+			roomInfo, err := core.CreateRoom(ctx)
+			if err != nil {
+				fmt.Printf("FATAL: Failed to create Jazz room: %v\n", err)
+				return
 			}
-			room := listenAddr
-			if room == "" {
-				room = "https://telemost.yandex.ru/j/1234567890"
-			}
-
-			key := core.EncodeSmartKey(room, password)
-			fmt.Printf("\n\033[33m┌─── SMART KEY ───────────────────────────────────────────────┐\033[0m\n")
-			fmt.Printf("\033[33m│\033[0m \033[32m%s\033[0m\n", key)
-			fmt.Printf("\033[33m└─────────────────────────────────────────────────────────────┘\033[0m\n\n")
+			
+			key := core.EncodeSmartKey(roomInfo.RoomID, roomInfo.Password)
+			fmt.Printf("VOLFHEIM_ROOM_URL=%s\n", roomInfo.RoomID)
+			fmt.Printf("VOLFHEIM_PASSWORD=%s\n", roomInfo.Password)
+			fmt.Printf("SMART_KEY=%s\n", key)
 		},
 	}
 	return cmd
@@ -58,6 +54,19 @@ func runServer(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
 	sess := &core.Session{}
 	rch := make(chan struct{}, 1)
+
+	// Автоматическое создание комнаты, если не передана ссылка
+	if listenAddr == "" {
+		fmt.Printf("[INFO] Creating new SberJazz room...\n")
+		roomInfo, err := core.CreateRoom(ctx)
+		if err != nil {
+			fmt.Printf("[FATAL] Failed to create Jazz room: %v\n", err)
+			return
+		}
+		listenAddr = roomInfo.RoomID
+		password = roomInfo.Password
+		fmt.Printf("[INFO] Jazz room created successfully!\n")
+	}
 
 	key := core.EncodeSmartKey(listenAddr, password)
 
@@ -91,7 +100,7 @@ func runServer(cmd *cobra.Command, args []string) {
 				return
 			case <-rch:
 				if m, ok := sess.Get(); ok && m != nil {
-					m.Close()
+					m.Reset()
 				}
 				bo := 2 * time.Second
 				for a := 1; ; a++ {
@@ -136,3 +145,4 @@ func runServer(cmd *cobra.Command, args []string) {
 		}(sid, m)
 	}
 }
+
