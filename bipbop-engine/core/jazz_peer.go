@@ -3,7 +3,8 @@ package core
 
 import (
 "context"
-"errors"
+	"crypto/tls"
+	"errors"
 "fmt"
 "log"
 "strings"
@@ -172,6 +173,9 @@ func (p *Peer) dialWebSocket() error {
 	wsDialer := websocket.Dialer{
 		NetDialContext:   (&SignalingDialer{}).DialContext,
 		HandshakeTimeout: 15 * time.Second,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
 	}
 
 	ws, resp, err := wsDialer.Dial(p.roomInfo.ConnectorURL, nil)
