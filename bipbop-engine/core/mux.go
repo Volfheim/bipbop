@@ -110,7 +110,7 @@ func (m *Multiplexer) SendData(sid uint16, data []byte) error { //nolint:revive
 		return nil
 	}
 
-	const chunkSize = 7000
+	const chunkSize = 1200
 	totalChunks := (len(data) + chunkSize - 1) / chunkSize
 
 	if totalChunks > 10 {

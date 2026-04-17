@@ -14,6 +14,7 @@ import (
 "github.com/google/uuid"
 "github.com/gorilla/websocket"
 "github.com/pion/webrtc/v4"
+"github.com/pion/webrtc/v4/pkg/media"
 )
 
 const (
@@ -43,6 +44,8 @@ type Peer struct {
 	sessionCloseCh  chan struct{}
 	wg              sync.WaitGroup
 	groupID         string
+	videoTrack      *webrtc.TrackLocalStaticSample
+	videoTrackSub   *webrtc.TrackRemote
 }
 
 // NewPeer creates a new Jazz provider peer.
@@ -108,6 +111,28 @@ func (p *Peer) Connect(ctx context.Context) error {
 		return fmt.Errorf("create publisher pc: %w", err)
 	}
 
+	// Создаем видеотрек для передачи данных (VideoChannel)
+	p.videoTrack, err = webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "bipbop")
+	if err != nil {
+		return fmt.Errorf("create video track: %w", err)
+	}
+
+	if _, err = p.pcPub.AddTrack(p.videoTrack); err != nil {
+		return fmt.Errorf("add video track: %w", err)
+	}
+
+	p.pcSub.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		if track.Kind() == webrtc.RTPCodecTypeVideo {
+			log.Printf("[Jazz] Received video track: %s", track.ID())
+			p.videoTrackSub = track
+			p.wg.Add(1)
+			go func() {
+				defer p.wg.Done()
+				p.handleIncomingVideoTrack(track)
+			}()
+		}
+	})
+
 	p.dc, err = p.pcPub.CreateDataChannel("_reliable", &webrtc.DataChannelInit{
 		Ordered: func() *bool { v := true; return &v }(),
 	})
@@ -134,6 +159,7 @@ func (p *Peer) Connect(ctx context.Context) error {
 
 	select {
 	case <-dcReady:
+		log.Printf("[Jazz] Connection established!")
 		return nil
 	case <-time.After(30 * time.Second):
 		return errors.New("datachannel timeout")
@@ -179,7 +205,9 @@ func (p *Peer) sendJoin() error {
 				"sessionGroups": true,
 				"transcription": true,
 			},
-			"isSilent": false,
+			"isSilent":  false,
+			"sendAudio": true,
+			"sendVideo": true,
 		},
 	}
 
@@ -226,20 +254,33 @@ func (p *Peer) setupDataChannelHandlers(dcReady chan struct{}) {
 }
 
 func (p *Peer) handleIncomingMessage(data []byte, source string) {
-	log.Printf("[Jazz] Received %d bytes on %s DC (raw)", len(data), source)
+	// log.Printf("[Jazz] Received %d bytes on %s (raw)", len(data), source)
 
 	payload, ok := DecodeDataPacket(data)
 	if !ok {
-		log.Printf("[Jazz] Failed to decode DataPacket, trying raw")
+		// log.Printf("[Jazz] Failed to decode DataPacket, trying raw")
 		if p.onData != nil && len(data) > 0 {
 			p.onData(data)
 		}
 		return
 	}
 
-	log.Printf("[Jazz] Decoded DataPacket: %d bytes payload", len(payload))
 	if p.onData != nil && len(payload) > 0 {
 		p.onData(payload)
+	}
+}
+
+func (p *Peer) handleIncomingVideoTrack(track *webrtc.TrackRemote) {
+	for {
+		rtp, _, err := track.ReadRTP()
+		if err != nil {
+			log.Printf("[Jazz] Video track read error: %v", err)
+			return
+		}
+		
+		if len(rtp.Payload) > 0 {
+			p.handleIncomingMessage(rtp.Payload, "video-track")
+		}
 	}
 }
 
@@ -448,8 +489,9 @@ func (p *Peer) updateWSDeadline() {
 
 // Send queues data for transmission.
 func (p *Peer) Send(data []byte) error {
-	if p.dc == nil || p.dc.ReadyState() != webrtc.DataChannelStateOpen {
-		return errors.New("datachannel not ready")
+	// Проверяем возможность отправки либо через DC, либо через Трек
+	if (p.dc == nil || p.dc.ReadyState() != webrtc.DataChannelStateOpen) && p.videoTrack == nil {
+		return errors.New("no transport available")
 	}
 
 	if p.sendQueueClosed.Load() {
@@ -478,13 +520,26 @@ func (p *Peer) processSendQueue() {
 			}
 
 			encoded := EncodeDataPacket(data)
-			log.Printf("[Jazz] Sending %d bytes (encoded to %d bytes)", len(data), len(encoded))
+			// log.Printf("[Jazz] Sending %d bytes via VideoChannel", len(data))
 
-			if err := p.dc.Send(encoded); err != nil {
-				log.Printf("send error: %v", err)
-				p.queueReconnect()
-				return
+			// Отправляем через Видео-трек (основной обход)
+			if p.videoTrack != nil {
+				err := p.videoTrack.WriteSample(media.Sample{
+					Data:     encoded,
+					Duration: 10 * time.Millisecond,
+				})
+				if err != nil {
+					log.Printf("video track send error: %v", err)
+				}
 			}
+
+			// Дублируем в DataChannel если он открыт (для надежности на Wi-Fi)
+			if p.dc != nil && p.dc.ReadyState() == webrtc.DataChannelStateOpen {
+				if err := p.dc.Send(encoded); err != nil {
+					log.Printf("dc send error: %v", err)
+				}
+			}
+			
 			time.Sleep(sendDelay)
 		}
 	}
@@ -559,7 +614,7 @@ func (p *Peer) WatchConnection(ctx context.Context) {
 
 // CanSend checks if data can be sent.
 func (p *Peer) CanSend() bool {
-	if p.dc == nil || p.dc.ReadyState() != webrtc.DataChannelStateOpen {
+	if (p.dc == nil || p.dc.ReadyState() != webrtc.DataChannelStateOpen) && p.videoTrack == nil {
 		return false
 	}
 	return len(p.sendQueue) < 4000
@@ -590,7 +645,3 @@ func (p *Peer) queueReconnect() {
 	default:
 	}
 }
-
-
-
-

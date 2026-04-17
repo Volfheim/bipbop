@@ -34,7 +34,7 @@ print_banner() {
     echo "  \___/ \___/|_|_| |_| |_|\___|_|_| |_| |_|"
     echo "                                           "
     echo "        BIP-BOP Server Manager v4.5"
-    echo -e "${YELLOW}        Version: 4.5-GOLDEN${NC}"
+    echo -e "${YELLOW}        Version: 4.5-GOLDEN (VideoChannel Edition)${NC}"
     echo -e "${NC}================================================="
 }
 
@@ -46,9 +46,15 @@ install_server() {
     echo -e "\n${CYAN}>>> Установка / Обновление Volfheim Server...${NC}"
     mkdir -p "$CONF_DIR"
 
-    echo -e "${CYAN}>>> Загрузка бинарника...${NC}"
+    echo -e "${CYAN}>>> Подготовка бинарника...${NC}"
     rm -f "$INSTALL_DIR/$BIN_NAME"
-    curl -sL "https://raw.githubusercontent.com/$GITHUB_REPO/main/bipbop-server/volfheim-linux-amd64?v=$(date +%s)" -o "$INSTALL_DIR/$BIN_NAME"
+    if [[ -f "./volfheim-linux-amd64" ]]; then
+        echo -e "${GREEN}[+] Используем локальный бинарник из текущей папки.${NC}"
+        cp "./volfheim-linux-amd64" "$INSTALL_DIR/$BIN_NAME"
+    else
+        echo -e "${YELLOW}[!] Локальный бинарник не найден, скачиваем из GitHub...${NC}"
+        curl -sL "https://raw.githubusercontent.com/$GITHUB_REPO/main/bipbop-server/volfheim-linux-amd64?v=$(date +%s)" -o "$INSTALL_DIR/$BIN_NAME"
+    fi
     chmod +x "$INSTALL_DIR/$BIN_NAME"
 
     local force_gen=false
