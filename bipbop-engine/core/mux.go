@@ -2,15 +2,14 @@
 package core
 
 import (
-"io"
-"net"
-"log"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"net"
 	"sync"
 	"time"
-
 )
 
 var (
@@ -53,8 +52,8 @@ type Multiplexer struct { //nolint:revive
 	mu            sync.RWMutex
 	maxStreams    int
 	maxBufferSize int
-	acceptCh chan uint16
-dataReady     map[uint16]chan struct{}
+	acceptCh    chan uint16
+	dataReady     map[uint16]chan struct{}
 	dataReadyMu   sync.Mutex
 	sendSeq       map[uint16]uint32
 	sendSeqMu     sync.Mutex
@@ -69,11 +68,12 @@ func New(clientID uint32, onSend func([]byte) error) *Multiplexer { //nolint:rev
 		maxStreams:    10000,
 		maxBufferSize: 32 * 1024 * 1024,
 		dataReady:     make(map[uint16]chan struct{}),
-		sendSeq: make(map[uint16]uint32), acceptCh: make(chan uint16, 5000),
+		sendSeq:       make(map[uint16]uint32),
+		acceptCh:      make(chan uint16, 5000),
 	}
 }
 
-func (m *Multiplexer) AcceptStream() (uint16, error) {
+func (m *Multiplexer) AcceptStream() (uint16, error) { //nolint:revive
 	sid := <-m.acceptCh
 	return sid, nil
 }
@@ -110,7 +110,7 @@ func (m *Multiplexer) SendData(sid uint16, data []byte) error { //nolint:revive
 		return nil
 	}
 
-	const chunkSize = 1200
+	const chunkSize = 7000
 	totalChunks := (len(data) + chunkSize - 1) / chunkSize
 
 	if totalChunks > 10 {
@@ -438,18 +438,12 @@ func (m *Multiplexer) CleanupDataChannel(sid uint16) { //nolint:revive
 	}
 }
 
-
-
 // BipBop Wrapper logic
-
-
 type MuxConn struct {
 	sid     uint16
 	mux     *Multiplexer
 	readBuf []byte
 }
-
-
 
 func NewMuxConn(sid uint16, mux *Multiplexer) *MuxConn {
 	return &MuxConn{sid: sid, mux: mux, readBuf: make([]byte, 0)}
@@ -499,8 +493,3 @@ func (c *MuxConn) RemoteAddr() net.Addr               { return AddrMock{addr: "m
 func (c *MuxConn) SetDeadline(t time.Time) error      { return nil }
 func (c *MuxConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *MuxConn) SetWriteDeadline(t time.Time) error { return nil }
-
-
-
-
-
