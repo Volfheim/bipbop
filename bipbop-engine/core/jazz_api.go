@@ -34,6 +34,7 @@ func CreateRoom(ctx context.Context) (*RoomInfo, error) {
 		"X-Jazz-AuthType":   "ANONYMOUS",
 		"X-Client-AuthType": "ANONYMOUS",
 		"Content-Type":      "application/json",
+		"Origin":            "https://salutejazz.ru",
 	}
 
 	createResp, err := createMeeting(ctx, headers)
@@ -177,6 +178,7 @@ func joinRoom(ctx context.Context, roomID, password string) (*RoomInfo, error) {
 		"X-Jazz-AuthType":   "ANONYMOUS",
 		"X-Client-AuthType": "ANONYMOUS",
 		"Content-Type":      "application/json",
+		"Origin":            "https://salutejazz.ru",
 	}
 
 	connectorURL, err := preconnect(ctx, roomID, password, headers)

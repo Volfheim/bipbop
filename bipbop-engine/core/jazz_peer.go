@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -171,10 +172,15 @@ func (p *Peer) dialWebSocket() error {
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 		},
+		Subprotocols: []string{"v1.json"},
 	}
 
-	// Синхронизация с olcrtc: заголовки по умолчанию
-	ws, resp, err := wsDialer.Dial(p.roomInfo.ConnectorURL, nil)
+	header := http.Header{}
+	header.Add("Origin", "https://salutejazz.ru")
+	header.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	// Синхронизация с olcrtc: использование кастомных заголовков для обхода 400
+	ws, resp, err := wsDialer.Dial(p.roomInfo.ConnectorURL, header)
 	if err != nil {
 		if resp != nil {
 			return fmt.Errorf("dial websocket: %w (Status: %d)", err, resp.StatusCode)
