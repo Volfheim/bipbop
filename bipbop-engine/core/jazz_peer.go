@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,7 +23,7 @@ const (
 	sendDelay                 = 2 * time.Millisecond
 )
 
-// Peer represents a SaluteJazz WebRTC connection.
+// Peer представляет соединение SaluteJazz WebRTC.
 type Peer struct {
 	name            string
 	roomInfo        *RoomInfo
@@ -50,7 +49,7 @@ type Peer struct {
 	videoTrackSub   *webrtc.TrackRemote
 }
 
-// NewPeer creates a new Jazz provider peer.
+// NewPeer создает новый экземпляр Jazz.
 func NewPeer(ctx context.Context, roomID, name string, onData func([]byte)) (*Peer, error) {
 	var roomInfo *RoomInfo
 	var err error
@@ -60,7 +59,6 @@ func NewPeer(ctx context.Context, roomID, name string, onData func([]byte)) (*Pe
 		if err != nil {
 			return nil, fmt.Errorf("create room: %w", err)
 		}
-		log.Printf("Jazz room created: %s:%s", roomInfo.RoomID, roomInfo.Password)
 	} else {
 		var password string
 		parts := strings.Split(roomID, ":")
@@ -86,7 +84,7 @@ func NewPeer(ctx context.Context, roomID, name string, onData func([]byte)) (*Pe
 	}, nil
 }
 
-// Connect starts the WebRTC connection process.
+// Connect запускает процесс подключения.
 func (p *Peer) Connect(ctx context.Context) error {
 	p.closed.Store(false)
 
@@ -175,11 +173,8 @@ func (p *Peer) dialWebSocket() error {
 		},
 	}
 
-	header := http.Header{}
-	header.Add("Origin", "https://bk.salutejazz.ru")
-	header.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-	ws, resp, err := wsDialer.Dial(p.roomInfo.ConnectorURL, header)
+	// Синхронизация с olcrtc: заголовки по умолчанию
+	ws, resp, err := wsDialer.Dial(p.roomInfo.ConnectorURL, nil)
 	if err != nil {
 		if resp != nil {
 			return fmt.Errorf("dial websocket: %w (Status: %d)", err, resp.StatusCode)
@@ -191,6 +186,12 @@ func (p *Peer) dialWebSocket() error {
 	}
 
 	p.ws = ws
+	ws.SetPongHandler(func(string) error {
+		_ = ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+	_ = ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+
 	return nil
 }
 
@@ -205,6 +206,7 @@ func (p *Peer) sendJoin() error {
 			"supportedFeatures": map[string]any{
 				"attachedRooms": true,
 				"sessionGroups": true,
+				"transcription": true,
 			},
 			"isSilent":  false,
 			"sendAudio": true,

@@ -2,16 +2,15 @@
 package core
 
 import (
-"net/http"
-"errors"
 	"bytes"
 	"context"
 	"encoding/json"
-
+	"errors"
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/google/uuid"
-
 )
 
 const jazzApiBase = "https://bk.salutejazz.ru"
@@ -87,7 +86,12 @@ func createMeeting(ctx context.Context, headers map[string]string) (*createRespo
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{}
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&SignalingDialer{}).DialContext,
+		},
+		Timeout: 15 * time.Second,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("do create request: %w", err)
@@ -140,7 +144,12 @@ func preconnect(ctx context.Context, roomID, password string, headers map[string
 		preReq.Header.Set(k, v)
 	}
 
-	client := &http.Client{}
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&SignalingDialer{}).DialContext,
+		},
+		Timeout: 15 * time.Second,
+	}
 	preResp, err := client.Do(preReq)
 	if err != nil {
 		return "", fmt.Errorf("do preconnect request: %w", err)
@@ -181,7 +190,3 @@ func joinRoom(ctx context.Context, roomID, password string) (*RoomInfo, error) {
 		ConnectorURL: connectorURL,
 	}, nil
 }
-
-
-
-
