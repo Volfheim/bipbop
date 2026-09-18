@@ -1,48 +1,17 @@
-# 🐺 Volfheim VPN (Bip-Bop)
+# bipbop
 
-**Volfheim VPN** — это высокопроизводительное VPN-решение для Android, построенное по принципу «слоеного пирога». Версия 4.5 является кульминацией проекта, перешедшей на полностью нативную архитектуру `olcrtc` для максимальной незаметности и стабильности.
+**English** · [Русский](README.ru.md)
 
----
+An **unmaintained Android VPN experiment**, also called Volfheim VPN / Bip-Bop. The repository is retained for historical reference. It is not a currently supported product; earlier claims of complete stability or production readiness should not be treated as current guarantees.
 
-## 🏆 СТАБИЛЬНАЯ ВЕРСИЯ: 4.5-ANTI-JAM (Milestone)
-Этот релиз фиксирует финальную, полностью рабочую структуру проекта:
-- **Полный переход на olcrtc**: Отказ от сторонних библиотек мультиплексирования в пользу нативного протокола.
-- **Bypass DNS (Anti-Jamming)**: Встроенный механизм обхода блокировок DNS через статические IP-адреса сигналинга.
-- **Data Integrity**: Исправлены критические ошибки потери данных в мультиплексоре, обеспечивая 100% загрузку тяжелых сайтов.
-- **Session Cleanup**: Умная очистка сессий при переподключении, исключающая «повисание» интернета.
+## What is here
 
----
+- `bipbop-android/` — Flutter interface and Android integration.
+- `bipbop-engine/` — Go engine and native integration code.
+- Historical commits, tags, build files and experiments.
 
-## 🍰 Архитектура проекта (v4.5)
+The project explored a Flutter/Dart interface, Kotlin `VpnService`, JNI/CGO integration and Go networking. Build and runtime behavior have not been revalidated as part of this documentation update.
 
-Проект разделен на 5 технологических уровней:
+[Original historical overview and build notes](docs/HISTORICAL_README.ru.md) · [Engine documentation](bipbop-engine/README.md)
 
-### 1. Уровень Интерфейса (Flutter / Dart)
-- **Фреймворк**: Flutter
-- **Задача**: Сбор Smart-Key, управление состоянием ("Подключено"/"Ошибка"), визуализация "живых" логов.
-
-### 2. Уровень Системы (Kotlin / Android VpnService)
-- **Сердце**: `BipBopVpnService`
-- **Роуминг (Handover)**: Нативный механизм адаптации под смену Wi-Fi/LTE.
-- **Туннелирование**: Передача дескриптора `tun0` в Go-ядро.
-
-### 3. Уровень Моста (JNI / CGO)
-- **Стабильность**: Использование `AttachCurrentThreadAsDaemon` для предотвращения крашей в JNI-слое.
-
-### 4. Уровень Ядра (Go Engine - olcrtc pure)
-- **Протокол**: Нативный `olcrtc` мультиплексор.
-- **Signaling Bypass**: Кастомный резолвер для обхода «глушилок» (DNS Jamming).
-- **Smart Mux**: Исправленный алгоритм буферизации TCP-потоков.
-
-### 5. Уровень Перехватчика (tun2socks)
-- **VoIP Support**: Реализация `UDP Associate` для звонков в Telegram/WhatsApp.
-
----
-
-## 🚀 Сборка проекта
-
-1. **Ядро**: `cd bipbop-engine/mobile/android/golib` -> Сборка `libbipbop.so`.
-2. **Приложение**: `cd bipbop-android && flutter build apk --release`.
-
----
-*Volfheim VPN v4.5-ANTI-JAM — Сделано с упором на стабильность в экстремальных условиях.*
+Historical documentation is preserved as a development record and may contain outdated instructions. Active Windows projects are listed on [my profile](https://github.com/Volfheim).
